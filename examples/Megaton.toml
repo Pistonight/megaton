@@ -1,0 +1,52 @@
+# An example Megaton.toml file
+[module]
+# name of the module. Used as output name (example.nso) and NX module name.
+name = "example"
+# title id of the program you are targeting. For example, BOTW:
+# note that this is an integer, not a string
+title-id = 0x01007ef00011e000
+
+# integration with the clangd langauge server
+[lang.clangd]
+output = ".clangd" # generates the .clangd file
+
+# make configuration
+[make]
+# symbol for the entry point
+entry = "my_main"
+# (optional) set to true to disable default flags
+no-default-flags = false
+
+# The source and include directories. Relative to root of the project (where Megaton.toml is)
+# sources are searched recursively in the directories
+sources = ["src"]
+includes = ["inc", "libs/example/include"]
+# extra defines
+defines = ["EXAMPLE=1"]
+# linker scripts (relative to project root)
+ld-scripts = ["linker.ld"]
+# extra macros to define. The macros can be a string or a list of strings, which are joined with a space
+extra = [
+    # writes `EXAMPLE_MACRO := hello` to the make file
+    { EXAMPLE_MACRO = "hello"},
+
+    # you can use the following flags to specify extra compiler options
+    { ARCH_FLAGS = "" },   # architecture flags, such as -march=armv8-a, which are shared for compiler and linker
+    { CFLAGS = "" },   # shared C/CXX flags
+    { ASFLAGS = "" },  # assembler flags
+    { CXXFLAGS = "" }, # CXX only flags
+    { LDFLAGS = "" },  # CXX flags for linking only (use -Wl, to pass flags to the linker)
+    { LIBS = "" },     # libraries flags such as -lfoo
+    { LIBPATHS = "" }, # extra library paths flags such as -Lfoo
+
+    # The generated make file is at target/megaton/debug/none/make/build.mk
+    # Use that to see what other macros you can take advantage of
+]
+
+# you can define additional profiles for different build options
+# the default profile is "none", here's a profile called "foo"
+# it extends the default profile and overrides some of the options
+[make.profiles.foo]
+defines=["FOO"]       # adds a new define
+sources=["src/foo"]   # adds a new source directory
+no-default-flags=true # override the base profile to use default flags
