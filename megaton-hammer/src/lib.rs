@@ -97,7 +97,7 @@ impl MegatonHammer {
         let build_dir = make_dir.join("build");
         if !build_dir.exists() {
             std::fs::create_dir_all(&build_dir)
-                .map_err(|e| Error::CreateDirectory(build_dir.display().to_string(), e))?;
+                .map_err(|e| Error::AccessDirectory(build_dir.display().to_string(), e))?;
             infoln!("Created", "`{}`", build_dir.display());
         }
         let makefile_path = make_dir.join("build.mk");
@@ -111,9 +111,12 @@ impl MegatonHammer {
         }
         if need_new_makefile {
             std::fs::write(&makefile_path, makefile)
-                .map_err(|e| Error::CreateDirectory(makefile_path.display().to_string(), e))?;
+                .map_err(|e| Error::AccessDirectory(makefile_path.display().to_string(), e))?;
             infoln!("Created", "`{}`", makefile_path.display());
         }
+
+        let elf_target = format!("{}.elf", config.module.name);
+        make::invoke_make(&build_dir.display().to_string(), "../build.mk", &elf_target)?;
 
         Ok(())
     }

@@ -4,7 +4,11 @@
 //! - `build.mk`: The Makefile
 //! - `build`: The build output directory
 
-use crate::{MegatonConfig, MegatonHammer};
+use std::io::{BufReader, BufRead};
+use std::path::Path;
+use std::process::{Command, Stdio};
+
+use crate::{MegatonConfig, MegatonHammer, infoln, errorln};
 use crate::error::Error;
 
 macro_rules! format_makefile_template {
@@ -17,7 +21,7 @@ include $(DEVKITPRO)/libnx/switch_rules
 MEGATON_MODULE_NAME := {MEGATON_MODULE_NAME}
 MEGATON_MODULE_ENTRY := {MEGATON_MODULE_ENTRY}
 MEGATON_MODULE_TITLE_ID := 0x{MEGATON_MODULE_TITLE_ID}
-MEGATON_ROOT := ../../../../
+MEGATON_ROOT := {MEGATON_ROOT}
 
 TARGET := $(MEGATON_MODULE_NAME)
 
@@ -26,12 +30,13 @@ DEFAULT_ARCH_FLAGS := \
     -mtune=cortex-a57 \
     -mtp=soft \
     -fPIC \
-    -fvisibility=hidden" \
+    -fvisibility=hidden \
 
 DEFAULT_CFLAGS := \
     -g \
     -Wall \
     -Werror \
+    -fdiagnostics-color=always \
     -ffunction-sections \
     -fdata-sections \
     -O3 \
@@ -67,16 +72,16 @@ DEFAULT_LIBS := -lgcc -lstdc++ -u malloc
 
 SOURCES          := $(SOURCES) {SOURCES}
 ALL_SOURCE_DIRS  := $(ALL_SOURCE_DIRS) $(foreach dir,$(SOURCES),$(shell find $(dir) -type d))
-VPATH            := $(VPATH) $(foreach dir,$(ALL_SOURCES_DIRS),$(CURDIR)/$(dir))
+VPATH            := $(VPATH) $(ALL_SOURCE_DIRS)
 
 INCLUDES         := $(INCLUDES) {INCLUDES}
 LIBDIRS          := $(LIBDIRS) $(PORTLIBS) $(LIBNX)
-INCLUDE_FLAGS    := $(foreach dir,$(INCLUDES),-I$(CURDIR)/$(dir)) $(foreach dir,$(LIBDIRS),-I$(dir)/include)
+INCLUDE_FLAGS    := $(foreach dir,$(INCLUDES),-I$(dir)) $(foreach dir,$(LIBDIRS),-I$(dir)/include)
 
 DEFINES          := $(DEFINES) {DEFINES}
 
 ARCH_FLAGS       := $(ARCH_FLAGS) {ARCH_FLAGS}
-CFLAGS           := $(CFLAGS) $(ARCH_FLAGS) $(DEFINES) $(INCLUDE) {CFLAGS}
+CFLAGS           := $(CFLAGS) $(ARCH_FLAGS) $(DEFINES) $(INCLUDE_FLAGS) {CFLAGS}
 CXXFLAGS         := $(CFLAGS) $(CXXFLAGS) {CXXFLAGS}
 ASFLAGS          := $(ASFLAGS) $(ARCH_FLAGS) {ASFLAGS}
 
@@ -88,9 +93,9 @@ LIBS             := $(LIBS) {LIBS}
 LIBPATHS         := $(LIBPATHS) $(foreach dir,$(LIBDIRS),-L$(dir)/lib) 
 
 DEPSDIR          ?= .
-CFILES           := $(foreach dir,$(ALL_SOURCES_DIRS),$(notdir $(wildcard $(dir)/*.c)))
-CPPFILES         := $(foreach dir,$(ALL_SOURCES_DIRS),$(notdir $(wildcard $(dir)/*.cpp)))
-SFILES           := $(foreach dir,$(ALL_SOURCES_DIRS),$(notdir $(wildcard $(dir)/*.s)))
+CFILES           := $(foreach dir,$(ALL_SOURCE_DIRS),$(notdir $(wildcard $(dir)/*.c)))
+CPPFILES         := $(foreach dir,$(ALL_SOURCE_DIRS),$(notdir $(wildcard $(dir)/*.cpp)))
+SFILES           := $(foreach dir,$(ALL_SOURCE_DIRS),$(notdir $(wildcard $(dir)/*.s)))
 OFILES           := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
 DFILES           := $(OFILES:.o=.d)
 
@@ -118,6 +123,11 @@ macro_rules! default_or_empty {
 impl MegatonConfig {
     /// Create the Makefile content from the config
     pub fn create_makefile(&self, cli: &MegatonHammer) -> Result<String, Error> {
+        let mut root = Path::new(&cli.dir).canonicalize().map_err(|e| Error::AccessDirectory(cli.dir.clone(), e))?.display().to_string();
+        if !root.ends_with('/') {
+            root.push('/');
+        }
+
         let make = self.make.get_profile(&cli.options.profile);
 
         let entry = make.entry.as_ref().ok_or(Error::NoEntryPoint)?;
@@ -133,6 +143,7 @@ impl MegatonConfig {
             MEGATON_MODULE_NAME = self.module.name,
             MEGATON_MODULE_ENTRY = entry,
             MEGATON_MODULE_TITLE_ID = self.module.title_id_hex(),
+            MEGATON_ROOT = root,
             EXTRA_SECTION = extra_section,
             SOURCES = sources,
             INCLUDES = includes,
@@ -148,4 +159,68 @@ impl MegatonConfig {
 
         Ok(makefile)
     }
+}
+
+pub fn invoke_make(build_directory: &str, makefile_path: &str, target: &str) -> Result<(), Error> {
+    let j_flag = format!("-j{}", num_cpus::get());
+    infoln!("Making", "`{}`", target);
+    let args = vec![
+        "--no-print-directory",
+        &j_flag,
+        "-C",
+        build_directory,
+        "-f",
+        makefile_path,
+        target
+    ];
+    let command = format!("make {:?}", args);
+    let mut child = Command::new("make")
+        .args([
+            "--no-print-directory",
+            &j_flag,
+            "-C",
+            build_directory,
+            "-f",
+            makefile_path,
+            target
+        ])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| Error::Subprocess(command.clone(), "cannot spawn child".to_string(), e))?;
+
+    if let Some(stdout) = child.stdout.take() {
+        let stdout = BufReader::new(stdout);
+        for line in stdout.lines() {
+            if let Ok(line) = line {
+                infoln!("Compiling", "{}", line);
+            }
+        }
+    }
+
+    if let Some(stderr) = child.stderr.take() {
+        let stderr = BufReader::new(stderr);
+        for line in stderr.lines() {
+            if let Ok(line) = line {
+                // hide some outputs
+                if line.starts_with("make: ***") {
+                    continue;
+                }
+                if line == "compilation terminated." {
+                    continue;
+                }
+                errorln!("Error", "{}", line);
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| Error::Subprocess(command.clone(), "cannot wait for child".to_string(), e))?;
+    if !status.success() {
+        return Err(Error::MakeError);
+    }
+
+    infoln!("Finished", "`{}`", target);
+
+    Ok(())
+
 }
