@@ -1,5 +1,5 @@
-use std::{cell::RefCell, io::IsTerminal};
 use std::io::Write;
+use std::{cell::RefCell, io::IsTerminal};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
 static mut ENABLED: bool = true;
@@ -28,7 +28,7 @@ fn make_stdout() -> StandardStream {
     StandardStream::stdout(color_choice)
 }
 
-pub (crate) fn print_status_tag(color_spec: &ColorSpec, tag: &str) {
+pub(crate) fn print_status_tag(color_spec: &ColorSpec, tag: &str) {
     STDOUT.with_borrow_mut(|stdout| {
         let _ = stdout.set_color(color_spec);
         let _ = write!(stdout, "{:>12}", tag);
@@ -37,19 +37,19 @@ pub (crate) fn print_status_tag(color_spec: &ColorSpec, tag: &str) {
     });
 }
 
-pub (crate) fn info_color() -> ColorSpec {
+pub(crate) fn info_color() -> ColorSpec {
     let mut x = ColorSpec::new();
     x.set_fg(Some(Color::Green)).set_bold(true);
     x
 }
 
-pub (crate) fn hint_color() -> ColorSpec {
+pub(crate) fn hint_color() -> ColorSpec {
     let mut x = ColorSpec::new();
     x.set_fg(Some(Color::Yellow)).set_bold(true);
     x
 }
 
-pub (crate) fn error_color() -> ColorSpec {
+pub(crate) fn error_color() -> ColorSpec {
     let mut x = ColorSpec::new();
     x.set_fg(Some(Color::Red)).set_bold(true);
     x

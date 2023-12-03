@@ -4,12 +4,15 @@
 //! - `build.mk`: The Makefile
 //! - `build`: The build output directory
 
-use std::io::{BufReader, BufRead};
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use crate::{MegatonConfig, MegatonHammer, infoln, errorln};
+use serde::{Deserialize, Serialize};
+
 use crate::error::Error;
+use crate::{errorln, infoln, MegatonConfig, MegatonHammer};
 
 macro_rules! format_makefile_template {
     ($($args:tt)*) => {
@@ -24,6 +27,7 @@ MEGATON_MODULE_TITLE_ID := 0x{MEGATON_MODULE_TITLE_ID}
 MEGATON_ROOT := {MEGATON_ROOT}
 
 TARGET := $(MEGATON_MODULE_NAME)
+VERFILE := verfile
 
 DEFAULT_ARCH_FLAGS := \
     -march=armv8-a+crc+crypto \
@@ -33,29 +37,28 @@ DEFAULT_ARCH_FLAGS := \
     -fvisibility=hidden \
 
 DEFAULT_CFLAGS := \
+    -D__SWITCH__ \
     -g \
     -Wall \
     -Werror \
     -fdiagnostics-color=always \
     -ffunction-sections \
     -fdata-sections \
+    -fvisibility=hidden \
     -O3 \
 
 DEFAULT_CXXFLAGS := \
     -fno-rtti \
-    -fomit-frame-pointer \
     -fno-exceptions \
     -fno-asynchronous-unwind-tables \
     -fno-unwind-tables \
-    -enable-libstdcxx-allocator=new \
     -fpermissive \
-    -std=c++20 \
+    -std=gnu++20 \
 
 DEFAULT_ASFLAGS := -g
 DEFAULT_LDFLAGS := \
     -g \
     -Wl,-Map,$(TARGET).map \
-    -nodefaultlibs \
     -nostartfiles \
     -Wl,--shared \
     -Wl,--export-dynamic \
@@ -64,9 +67,10 @@ DEFAULT_LDFLAGS := \
     -Wl,--build-id=sha1 \
     -Wl,--nx-module-name \
     -Wl,-init=$(MEGATON_MODULE_ENTRY) \
+    -Wl,--version-script=$(VERFILE) \
     -Wl,--exclude-libs=ALL \
 
-DEFAULT_LIBS := -lgcc -lstdc++ -u malloc
+DEFAULT_LIBS :=
 
 {EXTRA_SECTION}
 
@@ -86,7 +90,7 @@ CXXFLAGS         := $(CFLAGS) $(CXXFLAGS) {CXXFLAGS}
 ASFLAGS          := $(ASFLAGS) $(ARCH_FLAGS) {ASFLAGS}
 
 LD_SCRIPTS       := {LD_SCRIPTS}
-LD_SCRIPTS_FLAGS := $(foreach ld,$(LD_SCRIPTS),-Wl,-T,$(CURDIR)/$(ld))
+LD_SCRIPTS_FLAGS := $(foreach ld,$(LD_SCRIPTS),-Wl,-T,$(ld))
 LD               := $(CXX)
 LDFLAGS          := $(LDFLAGS) $(ARCH_FLAGS) $(LD_SCRIPTS_FLAGS) {LDFLAGS}
 LIBS             := $(LIBS) {LIBS}
@@ -100,7 +104,14 @@ OFILES           := $(CPPFILES:.cpp=.o) $(CFILES:.c=.o) $(SFILES:.s=.o)
 DFILES           := $(OFILES:.o=.d)
 
 $(TARGET).nso: $(TARGET).elf
-$(TARGET).elf: $(OFILES) $(LD_SCRIPTS)
+$(TARGET).elf: $(OFILES) $(LD_SCRIPTS) $(VERFILE)
+$(VERFILE):
+	@echo $(VERFILE)
+	@echo "{{" > $(VERFILE)
+	@echo "    global:" >> $(VERFILE)
+	@echo "        $(MEGATON_MODULE_ENTRY);" >> $(VERFILE)
+	@echo "    local: *;" >> $(VERFILE)
+	@echo "}};" >> $(VERFILE)
 
 -include $(DFILES)
 
@@ -123,7 +134,11 @@ macro_rules! default_or_empty {
 impl MegatonConfig {
     /// Create the Makefile content from the config
     pub fn create_makefile(&self, cli: &MegatonHammer) -> Result<String, Error> {
-        let mut root = Path::new(&cli.dir).canonicalize().map_err(|e| Error::AccessDirectory(cli.dir.clone(), e))?.display().to_string();
+        let mut root = Path::new(&cli.dir)
+            .canonicalize()
+            .map_err(|e| Error::AccessDirectory(cli.dir.clone(), e))?
+            .display()
+            .to_string();
         if !root.ends_with('/') {
             root.push('/');
         }
@@ -132,12 +147,37 @@ impl MegatonConfig {
 
         let entry = make.entry.as_ref().ok_or(Error::NoEntryPoint)?;
 
-        let extra_section = make.extra.iter().map(|s| format!("{} := {}", s.key, s.val)).collect::<Vec<_>>().join("\n");
+        let extra_section = make
+            .extra
+            .iter()
+            .map(|s| format!("{} := {}", s.key, s.val))
+            .collect::<Vec<_>>()
+            .join("\n");
 
-        let sources = make.sources.iter().map(|s| format!("$(MEGATON_ROOT){s}")).collect::<Vec<_>>().join(" ");
-        let includes = make.includes.iter().map(|s| format!("$(MEGATON_ROOT){s}")).collect::<Vec<_>>().join(" ");
-        let ld_scripts = make.ld_scripts.iter().map(|s| format!("$(MEGATON_ROOT){s}")).collect::<Vec<_>>().join(" ");
-        let defines = make.defines.iter().map(|s| format!("-D{s}")).collect::<Vec<_>>().join(" ");
+        let sources = make
+            .sources
+            .iter()
+            .map(|s| format!("$(MEGATON_ROOT){s}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let includes = make
+            .includes
+            .iter()
+            .map(|s| format!("$(MEGATON_ROOT){s}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let ld_scripts = make
+            .ld_scripts
+            .iter()
+            .map(|s| format!("$(MEGATON_ROOT){s}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let defines = make
+            .defines
+            .iter()
+            .map(|s| format!("-D{s}"))
+            .collect::<Vec<_>>()
+            .join(" ");
 
         let makefile = format_makefile_template!(
             MEGATON_MODULE_NAME = self.module.name,
@@ -161,39 +201,133 @@ impl MegatonConfig {
     }
 }
 
-pub fn invoke_make(build_directory: &str, makefile_path: &str, target: &str) -> Result<(), Error> {
+/// Compiler command for IDE integration. See
+/// <https://clang.llvm.org/docs/JSONCompilationDatabase.html>
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct CompilerCommand {
+    /// The working directory of the compilation. All paths specified in the command or file fields must be either absolute or relative to this directory.
+    pub directory: String,
+    /// The main translation unit source processed by this compilation step. This is used by tools as the key into the compilation database. There can be multiple command objects for the same file, for example if the same source file is compiled with different configurations.
+    pub file: String,
+    /// The compile command as a single shell-escaped string. Arguments may be shell quoted and escaped following platform conventions, with ‘"’ and ‘\’ being the only special characters. Shell expansion is not supported.
+    pub command: String,
+    /// The name of the output created by this compilation step.
+    pub output: String,
+}
+
+impl CompilerCommand {
+    pub fn from_command(dkp_bin_path: &str, build_directory: &str, command: &str) -> Self {
+        // hopefully there are no spaces in the source paths...:)
+        let mut iter = command.split_whitespace();
+        let mut file = String::new();
+        let mut output = String::new();
+        while let Some(arg) = iter.next() {
+            match arg {
+                "-c" => {
+                    if let Some(arg) = iter.next() {
+                        file = arg.to_string();
+                    }
+                }
+                "-o" => {
+                    if let Some(arg) = iter.next() {
+                        output = arg.to_string();
+                    }
+                }
+                _ => {}
+            }
+        }
+        Self {
+            directory: build_directory.to_string(),
+            file,
+            command: format!("{dkp_bin_path}{command}"),
+            output,
+        }
+    }
+}
+
+pub fn invoke_make<SRoot, SBuild>(
+    root_dir: SRoot,
+    build_dir: SBuild,
+    makefile_path: &str,
+    target: &str,
+    dkp_bin_path: &str,
+    save_compiler_commands: bool,
+) -> Result<(), Error>
+where
+    SRoot: AsRef<Path>,
+    SBuild: AsRef<Path>,
+{
+    let root_dir = root_dir.as_ref();
+    let build_dir = build_dir.as_ref();
     let j_flag = format!("-j{}", num_cpus::get());
-    infoln!("Making", "`{}`", target);
+    infoln!("Making", "{}", target);
+    let build_dir_str = build_dir.display().to_string();
     let args = vec![
         "--no-print-directory",
+        "V=1",
         &j_flag,
         "-C",
-        build_directory,
+        &build_dir_str,
         "-f",
         makefile_path,
-        target
+        target,
     ];
     let command = format!("make {:?}", args);
     let mut child = Command::new("make")
-        .args([
-            "--no-print-directory",
-            &j_flag,
-            "-C",
-            build_directory,
-            "-f",
-            makefile_path,
-            target
-        ])
+        .args(args)
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
         .spawn()
         .map_err(|e| Error::Subprocess(command.clone(), "cannot spawn child".to_string(), e))?;
 
+    // load compiler commands
+    let mut compiler_commands = BTreeMap::new();
+    let cc_json_path = build_dir.join("compile_commands.json");
+    if save_compiler_commands && cc_json_path.exists() {
+        let cc_json = std::fs::read_to_string(&cc_json_path)
+            .map_err(|e| Error::AccessFile(cc_json_path.display().to_string(), e))?;
+        if let Ok(cc_vec) = serde_json::from_str::<Vec<CompilerCommand>>(&cc_json) {
+            for command in cc_vec {
+                compiler_commands.insert(command.file.clone(), command);
+            }
+        }
+    }
+
+    let build_dir_abs = build_dir.canonicalize().map_err(|e| {
+        Error::AccessDirectory(build_dir.display().to_string(), e)
+    })?;
+    let root_dir_abs = root_dir.canonicalize().map_err(|e| {
+        Error::AccessDirectory(root_dir.display().to_string(), e)
+    })?;
+    let cc_build_path = build_dir_abs.display().to_string();
+
     if let Some(stdout) = child.stdout.take() {
         let stdout = BufReader::new(stdout);
         for line in stdout.lines() {
             if let Ok(line) = line {
-                infoln!("Compiling", "{}", line);
+                // hide some outputs
+                if line.starts_with("built ...") {
+                    continue;
+                }
+                if line.ends_with("up to date.") {
+                    continue;
+                }
+                if line.starts_with("aarch64-none-elf-") {
+                    // compiler command
+                    let compiler_command =
+                    CompilerCommand::from_command(dkp_bin_path, &cc_build_path, &line);
+                    if let Some(file_path) = pathdiff::diff_paths(Path::new(&compiler_command.file), &root_dir_abs) {
+                        infoln!("Compiling", "{}", file_path.display());
+                    }
+                    compiler_commands.insert(compiler_command.file.clone(), compiler_command);
+                    continue;
+                }
+                if let Some(line) = line.strip_prefix("linking ") {
+                    infoln!("Linking", "{}", line);
+                }
+                // else {
+                //     infoln!("Make", "{}", line);
+                // }
             }
         }
     }
@@ -214,13 +348,31 @@ pub fn invoke_make(build_directory: &str, makefile_path: &str, target: &str) -> 
         }
     }
 
-    let status = child.wait().map_err(|e| Error::Subprocess(command.clone(), "cannot wait for child".to_string(), e))?;
+    let status = child
+        .wait()
+        .map_err(|e| Error::Subprocess(command.clone(), "cannot wait for child".to_string(), e))?;
     if !status.success() {
         return Err(Error::MakeError);
     }
 
-    infoln!("Finished", "`{}`", target);
+    infoln!("Finished", "{}", target);
+
+    if save_compiler_commands {
+        let vec = compiler_commands.into_values().collect::<Vec<_>>();
+
+        match serde_json::to_string_pretty(&vec) {
+            Err(e) => {
+                errorln!("Error", "Failed to serialize compiler commands: {}", e);
+            }
+            Ok(json) => {
+                std::fs::write(&cc_json_path, json).map_err(|e| {
+                    Error::AccessFile(cc_json_path.display().to_string(), e)
+                })?;
+                infoln!("Saved", "compile_commands.json")
+            }
+        }
+    }
+
 
     Ok(())
-
 }

@@ -2,7 +2,7 @@
 
 use std::{collections::BTreeMap, path::Path};
 
-use serde::{Serialize, Deserialize, de::Visitor};
+use serde::{de::Visitor, Deserialize, Serialize};
 
 use crate::error::Error;
 
@@ -17,16 +17,21 @@ pub struct MegatonConfig {
 
     /// The `[make]` section
     pub make: ProfileContainer<Make>,
+
+    /// The `[check]` section (for checking unresolved dynamic symbols)
+    pub check: Option<ProfileContainer<Check>>,
 }
 
 impl MegatonConfig {
     /// Load a config from a file
-    pub fn from_path<S>(path: S) -> Result<Self, Error> where S: AsRef<Path> {
+    pub fn from_path<S>(path: S) -> Result<Self, Error>
+    where
+        S: AsRef<Path>,
+    {
         let path = path.as_ref();
         let config = std::fs::read_to_string(path)
-            .map_err(|e| Error::ReadConfig(path.display().to_string(), e))?;
-        let config = toml::from_str(&config)
-            .map_err(|e| Error::ParseConfig(e.to_string()))?;
+            .map_err(|e| Error::AccessFile(path.display().to_string(), e))?;
+        let config = toml::from_str(&config).map_err(|e| Error::ParseConfig(e.to_string()))?;
         Ok(config)
     }
 }
@@ -122,18 +127,43 @@ impl Profilable for Make {
     }
 }
 
+/// The `check` section
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub struct Check {
+    /// Symbols to ignore
+    #[serde(default)]
+    pub ignore: Vec<String>,
+    /// Paths to *.syms file (output of objdump) that contains dynamic symbols accessible by the module
+    #[serde(default)]
+    pub symbols: Vec<String>,
+}
+
+impl Profilable for Check {
+    fn extend(&mut self, other: &Self) {
+        self.ignore.extend(other.ignore.iter().cloned());
+        self.symbols.extend(other.symbols.iter().cloned());
+    }
+}
+
 /// Generic config section that can be extended with profiles
 ///
 /// For example, the `[make]` section can have profiles with `[make.profiles.<name>]`
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-pub struct ProfileContainer<T> where T: Profilable + Clone {
+pub struct ProfileContainer<T>
+where
+    T: Profilable + Clone,
+{
     #[serde(flatten)]
     pub base: T,
     #[serde(default)]
     pub profiles: BTreeMap<String, T>,
 }
 
-impl<T> ProfileContainer<T> where T: Profilable  + Clone{
+impl<T> ProfileContainer<T>
+where
+    T: Profilable + Clone,
+{
     /// Get a profile by name
     ///
     /// If the name is "none", or there is no profile with that name,
@@ -164,15 +194,17 @@ pub struct KeyVal {
 }
 impl<'de> Deserialize<'de> for KeyVal {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>, {
+    where
+        D: serde::Deserializer<'de>,
+    {
         deserializer.deserialize_map(KeyValVisitor)
     }
 }
 impl Serialize for KeyVal {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-        where
-            S: serde::Serializer, {
+    where
+        S: serde::Serializer,
+    {
         use serde::ser::SerializeMap;
         let mut map = serializer.serialize_map(Some(1))?;
         map.serialize_entry(&self.key, &self.val)?;
@@ -185,47 +217,49 @@ impl<'de> Visitor<'de> for KeyValVisitor {
     type Value = KeyVal;
 
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(formatter, "a mapping value with a single key and non-mapping value")
+        write!(
+            formatter,
+            "a mapping value with a single key and non-mapping value"
+        )
     }
 
     fn visit_map<A>(self, mut map: A) -> Result<Self::Value, A::Error>
-        where
-            A: serde::de::MapAccess<'de>, {
+    where
+        A: serde::de::MapAccess<'de>,
+    {
         let (key, val) = match map.next_entry::<String, Val>()? {
-            Some((key, val)) => {
-                (key, val)
-            },
+            Some((key, val)) => (key, val),
             None => return Err(serde::de::Error::custom("mapping must be non-empty")),
         };
 
         if map.next_key::<String>()?.is_some() {
-            return Err(serde::de::Error::custom("mapping must have only one key-value pair"));
+            return Err(serde::de::Error::custom(
+                "mapping must have only one key-value pair",
+            ));
         }
 
-        Ok(KeyVal {
-            key,
-            val: val.0,
-        })
+        Ok(KeyVal { key, val: val.0 })
     }
 }
-
 
 macro_rules! impl_visit_to_string {
     ($func:ident, $t:ty) => {
         fn $func<E>(self, x: $t) -> Result<Self::Value, E>
-            where
-                E: serde::de::Error, {
+        where
+            E: serde::de::Error,
+        {
             Ok(Val(x.to_string()))
         }
-    }
+    };
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize)]
 struct Val(String);
 impl<'de> Deserialize<'de> for Val {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-        where
-            D: serde::Deserializer<'de>, {
+    where
+        D: serde::Deserializer<'de>,
+    {
         deserializer.deserialize_any(ValVisitor)
     }
 }
@@ -241,24 +275,27 @@ impl<'de> Visitor<'de> for ValVisitor {
     impl_visit_to_string!(visit_bool, bool);
 
     fn visit_borrowed_bytes<E>(self, v: &'de [u8]) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         self.visit_byte_buf(v.to_vec())
     }
 
     impl_visit_to_string!(visit_borrowed_str, &'de str);
 
     fn visit_byte_buf<E>(self, v: Vec<u8>) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         String::from_utf8(v)
             .map_err(|_| serde::de::Error::custom("value must be valid utf-8"))
             .map(Val)
     }
 
     fn visit_bytes<E>(self, v: &[u8]) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         self.visit_byte_buf(v.to_vec())
     }
 
@@ -278,14 +315,16 @@ impl<'de> Visitor<'de> for ValVisitor {
     // newtype_struct not allowed
 
     fn visit_none<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         Ok(Val("".to_string()))
     }
 
     fn visit_seq<A>(self, mut seq: A) -> Result<Self::Value, A::Error>
-        where
-            A: serde::de::SeqAccess<'de>, {
+    where
+        A: serde::de::SeqAccess<'de>,
+    {
         let mut s = Vec::new();
         while let Some(x) = seq.next_element::<Val>()? {
             s.push(x.0);
@@ -294,16 +333,18 @@ impl<'de> Visitor<'de> for ValVisitor {
     }
 
     fn visit_some<D>(self, deserializer: D) -> Result<Self::Value, D::Error>
-        where
-            D: serde::Deserializer<'de>, {
+    where
+        D: serde::Deserializer<'de>,
+    {
         Deserialize::deserialize(deserializer)
     }
 
     impl_visit_to_string!(visit_str, &str);
 
     fn visit_string<E>(self, v: String) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         Ok(Val(v))
     }
 
@@ -314,8 +355,9 @@ impl<'de> Visitor<'de> for ValVisitor {
     impl_visit_to_string!(visit_u8, u8);
 
     fn visit_unit<E>(self) -> Result<Self::Value, E>
-        where
-            E: serde::de::Error, {
+    where
+        E: serde::de::Error,
+    {
         Ok(Val("".to_string()))
     }
 }

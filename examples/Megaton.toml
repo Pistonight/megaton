@@ -50,3 +50,13 @@ extra = [
 defines=["FOO"]       # adds a new define
 sources=["src/foo"]   # adds a new source directory
 no-default-flags=true # override the base profile to use default flags
+
+# This section is optional to check if external symbols are defined
+# in a set of symbols
+[check]
+ignore = [".text", ".data"] # ignore these symbols that are in the final binary
+symbols = [
+    "some.syms" # path(s) to files that contain objdump -T output for the set of known symbols
+                # that can appear in the final binary
+]
+
