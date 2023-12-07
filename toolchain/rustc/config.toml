@@ -1,0 +1,10 @@
+# Includes one of the default files in src/bootstrap/defaults
+profile = "compiler"
+change-id = 117813
+
+[llvm]
+download-ci-llvm = false # might have issues when downloading, just build from source
+
+[build]
+build-stage = 1
+# host and target are written by the install script
