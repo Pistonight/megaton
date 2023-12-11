@@ -1,6 +1,6 @@
 #!/usr/bin/bash
-
 # This script builds and installs a custom rustc toolchain "megaton"
+
 TOOLCHAIN_NAME=megaton
 if rustup toolchain list -v | grep $TOOLCHAIN_NAME; then
     if ! rustc +megaton -vV; then
@@ -55,7 +55,7 @@ if ! NINJA=$(which ninja); then
     exit 1
 fi
 
-TOOLCHAIN_RUSTC=$MEGATON_HOME/toolchain/rustc
+TOOLCHAIN_RUSTC=$MEGATON_HOME/rustc
 RUST_REPO=$TOOLCHAIN_RUSTC/rust
 
 if ! [ -d "$RUST_REPO" ]; then
