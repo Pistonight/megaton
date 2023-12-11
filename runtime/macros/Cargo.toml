@@ -1,0 +1,15 @@
+[package]
+name = "megaton-proc-macros"
+version = "0.0.0"
+edition = "2021"
+description = "Procedural macros for megaton"
+
+[dependencies]
+proc-macro2 = "1.0.70"
+quote = "1.0.33"
+syn = { version = "2.0.39", features = ["full"] }
+
+[lib]
+proc-macro = true
+crate-type = ["proc-macro"]
+path = "src/lib.rs"

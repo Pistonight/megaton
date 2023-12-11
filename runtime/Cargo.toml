@@ -1,0 +1,21 @@
+[package]
+name = "megaton"
+version = "0.0.0"
+edition = "2021"
+description = "Megaton runtime libraries"
+
+[dependencies]
+megaton-proc-macros = { path = "macros" }
+static_assertions = "1.1.0"
+
+[dev-dependencies]
+ninja-writer = "0.2.0"
+
+[lib]
+path = "src/lib.rs"
+name = "megaton"
+
+# Using cargo example feature to run configure script
+[[example]]
+name = "configure"
+path = "configure.rs"

@@ -1,0 +1,14 @@
+version: '3'
+
+tasks:
+  configure:
+    desc: (Re)-configure ninja build.
+    cmds:
+    - cargo run --example configure -- build.ninja
+    - ninja -t compdb as cc cxx > build/compile_commands.json
+
+  build:
+    desc: Execute incremental builds
+    cmds:
+    - ninja
+
