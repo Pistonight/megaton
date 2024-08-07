@@ -1,32 +1,33 @@
-use std::{
-    path::{Path, PathBuf},
-    process::{Command, Stdio},
-    time::SystemTime,
-};
+use std::path::{Path, PathBuf};
 
 use clap::{Parser, Subcommand};
+use serde_json::{Value, json};
 
 pub mod config;
-pub use config::MegatonConfig;
 pub mod check;
 pub mod make;
-
 pub mod error;
-use error::Error;
 
 pub mod print;
+pub mod stdio;
+pub mod toolchain;
+
+use crate::stdio::{args, root_rel, ChildBuilder, PathExt, check_env, check_tool};
+use crate::error::Error;
+
+pub use config::MegatonConfig;
 
 /// CLI entry point
 #[derive(Debug, Clone, Default, PartialEq, Parser)]
 #[command(author, version, about)]
 pub struct MegatonHammer {
-    /// The project directory.
+    /// Set the project root (where Megaton.toml is)
     ///
-    /// If specified, megaton will run as if invoked from this directory.
+    /// Defaults to the current working directory
     #[clap(short('C'), long, default_value = ".")]
     pub dir: String,
 
-    /// The subcommand
+    /// Subcommand
     #[clap(subcommand)]
     pub command: Option<MegatonCommand>,
 
@@ -37,19 +38,20 @@ pub struct MegatonHammer {
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum MegatonCommand {
-    /// Remove the outputs
-    Clean,
+    /// Build the toolchain
+    Toolchain,
+}
+
+impl MegatonCommand {
+    pub fn run(&self) -> Result<(), Error> {
+        match self {
+            Self::Toolchain => toolchain::build(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Parser)]
 pub struct BuildOptions {
-    /// Build the project in release mode.
-    ///
-    /// This will pass `--release` to cargo and may
-    /// change some default flags passed to C compilers.
-    #[clap(short, long)]
-    pub release: bool,
-
     /// Specify the build profile to use.
     ///
     /// Different profiles for `cargo`, `make` and `check` can be defined
@@ -63,193 +65,278 @@ pub struct BuildOptions {
     pub quiet: bool,
 }
 
-impl MegatonHammer {
-    /// Invoke `self.command`
-    pub fn invoke(&self) -> Result<(), Error> {
-        match &self.command {
-            Some(MegatonCommand::Clean) => self.clean(),
-            None => self.build(),
+/// Paths used by the program. All paths are absolute
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Paths {
+    /// Current working directory
+    pub cwd: PathBuf,
+
+    /// Root directory of the project (where Megaton.toml is, set by `--dir/-C`)
+    pub root: PathBuf,
+
+    /// The devkitPro installation. Read from the `DEVKITPRO` environment variable.
+    pub devkitpro: PathBuf,
+    
+    /// The compiler toolchain. ($DEVKITPRO/devkitA64/bin)
+    pub devkita64_bin: PathBuf,
+
+    /// The npdmtool executable ($DEVKITPRO/tools/bin/npdmtool)
+    pub npdmtool: PathBuf,
+
+    /// The aarch64-none-elf-objdump executable ($DEVKITPRO/devkitA64/bin/aarch64-none-elf-objdump)
+    pub objdump: PathBuf,
+
+    /// Megaton.toml in the root directory
+    pub megaton_toml: PathBuf,
+
+    /// The target directory for megaton (<root>/target/megaton/<profile>)
+    pub target: PathBuf,
+
+    /// The home directory of megaton. Read from the MEAGTON_HOME environment variable.
+    pub megaton_home: PathBuf,
+
+    /// The toolchain directory for megaton. ($MEGATON_HOME/toolchain)
+    pub toolchain: PathBuf,
+
+    /// The template json file for generating the npdm file. ($MEGATON_HOME/toolchain/npdm-template.json)
+    pub npdm_template_json: PathBuf,
+
+    /// The make build directory
+    pub make: PathBuf,
+
+    /// The makefile
+    pub makefile: PathBuf,
+
+    /// The target ELF
+    pub elf: PathBuf,
+
+    /// The target NSO
+    pub nso: PathBuf,
+
+    /// The compile_commands.json file
+    pub cc_json: PathBuf,
+
+}
+
+impl Paths {
+    pub fn new(root: &str) -> Result<Self, Error> {
+        let cwd = std::env::current_dir().map_err(|e| Error::InvalidPath(".".to_string(), e))?;
+        let cwd = cwd.canonicalize2()?;
+        let root = root.canonicalize2()?;
+
+        let devkitpro = check_env!("DEVKITPRO", "Please refer to https://devkitpro.org/wiki/devkitPro_pacman#customising-existing-pacman-install to configure the environment variables.")?;
+        let devkitpro = devkitpro.canonicalize2()?;
+        let devkita64_bin = devkitpro.join("devkitA64/bin").canonicalize2()?;
+        let npdmtool = devkitpro.join("tools/bin/npdmtool").canonicalize2()?;
+        let objdump = devkita64_bin.join("aarch64-none-elf-objdump").canonicalize2()?;
+        check_tool!(npdmtool, "devkitPro")?;
+        check_tool!(objdump, "devkitPro")?;
+
+        let megaton_home = check_env!("MEGATON_HOME", "Please set MEGATON_HOME to the local path to the megaton repository on your system.")?;
+        let megaton_home = megaton_home.canonicalize2()?;
+        let toolchain = megaton_home.join("toolchain").canonicalize2()?;
+        let runtime = megaton_home.join("runtime").canonicalize2()?;
+        let npdm_template_json = runtime.join("npdm-template.json").canonicalize2()?;
+
+        let megaton_toml = root.join("Megaton.toml");
+        if !megaton_toml.exists() {
+            return Err(Error::NotFoundWithMessage(
+                megaton_toml.display().to_string(),
+                "Please create the `Megaton.toml` in the project root.".to_string()
+            ));
         }
+        let megaton_toml = megaton_toml.canonicalize2()?;
+
+        Ok(Self {
+            cwd,
+            root,
+            devkitpro,
+            devkita64_bin,
+            npdmtool,
+            objdump,
+            megaton_toml,
+            megaton_home,
+            toolchain,
+            npdm_template_json,
+            ..Default::default()
+        })
     }
-    /// Invoke the build command
+
+    pub fn prepare_profile(mut self, profile: &str) -> Result<Self, Error> {
+        let target = self.root.join("target/megaton").join(profile);
+        if !target.exists() {
+            stdio::ensure_directory(&target)?;
+            infoln!("Created", "{}", target.display());
+        }
+        let target = target.canonicalize2()?;
+
+        self.target = target;
+
+        Ok(self)
+    }
+
+    pub fn pre_makefile(mut self) -> Result<Self, Error> {
+        let make = self.target.join("make");
+        if !make.exists() {
+            stdio::ensure_directory(&make)?;
+            infoln!("Created", "{}", make.display());
+        }
+        let make = make.canonicalize2()?;
+
+        self.make = make;
+        self.makefile = self.target.join("makefile");
+        Ok(self)
+    }
+
+    pub fn pre_make(mut self, module_name: &str) -> Result<Self, Error> {
+        self.makefile = self.makefile.canonicalize2()?;
+        self.elf = self.make.join(format!("{module_name}.elf"));
+        self.nso = self.make.join(format!("{module_name}.nso"));
+        self.cc_json = self.make.join("compile_commands.json");
+
+        Ok(self)
+    }
+
+    /// Get the path as relative from root
+    pub fn from_root<P>(&self, path: P) -> Result<PathBuf, Error>
+    where
+        P: AsRef<Path>,
+    {
+        path.from_base(&self.root)
+    }
+}
+
+
+impl MegatonHammer {
+    /// Build the project
     pub fn build(&self) -> Result<(), Error> {
-        #[cfg(target_os = "windows")]
-        {
-            warnln!("Warning", "You are using Windows. There is a high chance the tool does not work. Please consider using WSL or a Linux environment to save yourself from troubles.");
-        }
-        which::which("make").map_err(|_| {
-            Error::MissingTool(
-                "make".to_string(),
-                "Please ensure it is installed in the system.".to_string(),
-            )
-        })?;
+        // === pre-conditions ===
+        // Check if projects, envs, tools are setup correctly
+        check_os()?;
+        // check_tool!("git")?;
+        check_tool!("make")?;
+        // check_tool!("cargo", "Rust")?;
+        // check_tool!("rustc", "Rust")?;
 
-        let env_dev_kit_pro = std::env::var("DEVKITPRO").unwrap_or_default();
-        if env_dev_kit_pro.is_empty() {
-            return Err(Error::MissingEnv(
-                "DEVKITPRO".to_string(),
-                "Please ensure devkitPro is installed in the system.".to_string(),
-            ));
-        }
-        let npdmtool = Path::new(&env_dev_kit_pro).join("tools/bin/npdmtool");
-        if which::which(&npdmtool).is_err() {
-            return Err(Error::MissingTool(
-                "npdmtool".to_string(),
-                "Please ensure devkitPro is installed in the system.".to_string(),
-            ));
-        }
-        let objdump = Path::new(&env_dev_kit_pro).join("devkitA64/bin/aarch64-none-elf-objdump");
-        if which::which(&objdump).is_err() {
-            return Err(Error::MissingTool(
-                "aarch64-none-elf-objdump".to_string(),
-                "Please ensure devkitPro is installed in the system.".to_string(),
-            ));
-        }
+        let paths = Paths::new(&self.dir)?;
 
-        let mut dkp_bin_path = Path::new(&env_dev_kit_pro).join("devkitA64/bin").display().to_string();
-        if !dkp_bin_path.ends_with('/') {
-            dkp_bin_path.push('/');
-        }
 
-        let root_dir = Path::new(&self.dir);
-        let megaton_toml_path = root_dir.join("Megaton.toml");
-        infoln!("Loading", "{}", megaton_toml_path.display());
-        let config = MegatonConfig::from_path(&megaton_toml_path)?;
-        let flavor = if self.options.release {
-            "release"
-        } else {
-            "debug"
+        infoln!("Loading", "{}", root_rel!(paths.megaton_toml)?.display());
+        let config = MegatonConfig::from_path(&paths.megaton_toml)?;
+        let mut profile = &self.options.profile;
+        if profile == "none" {
+            if config.module.no_default_profile {
+                return Err(Error::NoProfile);
+            }
+            if let Some(default_profile) = &config.module.default_profile {
+                profile = default_profile;
+            }
         };
-        let profile = &self.options.profile;
+        let paths = paths.prepare_profile(profile)?;
 
+        // === pre-build ===
+        // Build meta files and detect if clean is needed
         infoln!(
             "Building",
-            "{} ({flavor}, profile `{profile}`)",
+            "{} (profile `{profile}`)",
             config.module.name
         );
-        let target_dir = root_dir.join("target/megaton").join(flavor).join(profile);
-        let makefile = config.create_makefile(&self)?;
-        let make_dir = target_dir.join("make");
-        let build_dir = make_dir.join("build");
-        let makefile_path = make_dir.join("build.mk");
+        let megaton_toml_modified_time = stdio::get_modified_time(&paths.megaton_toml)?;
+        let npdm_app_json_path = paths.target.join("npdm-app.json");
+        let need_clean = match stdio::get_modified_time(&npdm_app_json_path) {
+            Ok(time) if time < megaton_toml_modified_time => true,
+            Err(_) => true,
+            _ => false,
+        };
+        if need_clean {
+            hintln!("Cleaning", "{}", root_rel!(paths.target)?.display());
+            stdio::remove_directory(&paths.target)?;
+            stdio::ensure_directory(&paths.target)?;
+
+            // npdm-app.json
+            infoln!("Loading", "{}", root_rel!(paths.npdm_template_json)?.display());
+            let npdm_data = stdio::read_file(&paths.npdm_template_json)?;
+            let mut npdm_data: Value = serde_json::from_str(&npdm_data)
+                .map_err(|e| Error::ParseJson(paths.npdm_template_json.display().to_string(), e))?;
+
+            npdm_data["title_id"] = json!(format!("0x{}", config.module.title_id_hex()));
+            let npdm_data = serde_json::to_string_pretty(&npdm_data).expect("fail to serialize npdm data");
+            stdio::write_file(&npdm_app_json_path, npdm_data)?;
+            let npdm_app_json_path = npdm_app_json_path.canonicalize2()?;
+            infoln!("Created", "{}", paths.from_root(&npdm_app_json_path)?.display());
+
+            let npdm_path = paths.target.join("main.npdm");
+            let npdm_status = ChildBuilder::new(&paths.npdmtool)
+                .args(args![
+                    &npdm_app_json_path,
+                    &npdm_path
+                ]).silent().spawn()?.wait()?;
+            if !npdm_status.success() {
+                return Err(Error::NpdmError(npdm_status));
+            }
+            let npdm_path = npdm_path.canonicalize2()?;
+            infoln!("Created", "{}", paths.from_root(npdm_path)?.display());
+
+        }
+
+        // === build ===
+        // run cargo (if needed)
+        // run make
+        let paths = paths.pre_makefile()?;
+        let makefile = config.create_makefile(&paths, &self)?;
         let mut need_new_makefile = true;
-        if makefile_path.exists() {
-            if let Ok(old_makefile) = std::fs::read_to_string(&makefile_path) {
+        if paths.makefile.exists() {
+            if let Ok(old_makefile) = stdio::read_file(&paths.makefile) {
                 if old_makefile == makefile {
                     need_new_makefile = false;
                 }
             }
         }
         if need_new_makefile {
-            if !make_dir.exists() {
-                std::fs::create_dir_all(&make_dir)
-                    .map_err(|e| Error::AccessDirectory(make_dir.display().to_string(), e))?;
-                infoln!("Created", "`{}`", make_dir.display());
+            if paths.make.exists() {
+                hintln!("Cleaning", "{}", root_rel!(paths.make)?.display());
+                stdio::remove_directory(&paths.make)?;
+                stdio::ensure_directory(&paths.make)?;
             }
-            std::fs::write(&makefile_path, makefile)
-                .map_err(|e| Error::AccessDirectory(makefile_path.display().to_string(), e))?;
-            infoln!("Saved", "`{}`", makefile_path.display());
-            if build_dir.exists() {
-                std::fs::remove_dir_all(&build_dir)
-                    .map_err(|e| Error::AccessDirectory(build_dir.display().to_string(), e))?;
-            }
-        }
-        if !build_dir.exists() {
-            std::fs::create_dir_all(&build_dir)
-                .map_err(|e| Error::AccessDirectory(build_dir.display().to_string(), e))?;
-            infoln!("Created", "`{}`", build_dir.display());
+            stdio::write_file(&paths.makefile, makefile)?;
+            infoln!("Saved", "{}", root_rel!(paths.makefile)?.display());
         }
 
-        // build ELF
-        let elf_target = format!("{}.elf", config.module.name);
-        let elf_path = build_dir.join(&elf_target);
-        let elf_modified_time = get_modified_time(&elf_path);
-        if elf_modified_time.is_none() && elf_path.exists() {
-            std::fs::remove_file(&elf_path)
-                .map_err(|e| Error::AccessFile(elf_path.display().to_string(), e))?;
-        }
-        make::invoke_make(
-            &root_dir,
-            &build_dir,
-            "../build.mk",
-            &elf_target,
-            &dkp_bin_path,
-            true,
-        )?;
-        let new_elf_modified_time = get_modified_time(&elf_path);
+        let paths = paths.pre_make(&config.module.name)?;
+        let elf_modified_time = stdio::get_modified_time(&paths.elf).ok();
+        infoln!("Making", "{}", root_rel!(paths.elf)?.display());
+        make::make_elf(&paths)?;
+        infoln!("Made", "{}", root_rel!(paths.elf)?.display());
+        let new_elf_modified_time = stdio::get_modified_time(&paths.elf).ok();
         if new_elf_modified_time.is_none() {
             return Err(Error::MakeError);
         }
         if new_elf_modified_time != elf_modified_time {
+            // === check ===
             if let Some(check_config) = &config.check {
                 let check = check_config.get_profile(profile);
-                check::check_symbols(root_dir, &elf_path, &objdump, &check)?;
+                check::check_elf(&paths, &check)?;
             }
         }
 
-        let nso_target = format!("{}.nso", config.module.name);
-        make::invoke_make(
-            &root_dir,
-            &build_dir,
-            "../build.mk",
-            &nso_target,
-            &dkp_bin_path,
-            false,
-        )?;
+        infoln!("Making", "{}", root_rel!(paths.nso)?.display());
+        make::make_nso(&paths)?;
+        infoln!(
+            "Finished",
+            "{} (profile `{profile}`)",
+            config.module.name
+        );
 
-        let app_json_path = target_dir.join("npdm-app.json");
-        let app_json = include_str!("./template.json")
-            .replace("TITLE_ID_PLACEHOLDER", &config.module.title_id_hex());
-        std::fs::write(&app_json_path, app_json)
-            .map_err(|e| Error::AccessFile(app_json_path.display().to_string(), e))?;
-
-        let args = vec![
-            app_json_path.display().to_string(),
-            target_dir.join("main.npdm").display().to_string(),
-        ];
-        let command = format!("{} {}", npdmtool.display().to_string(), args.join(" "));
-        let mut child = Command::new(npdmtool)
-            .args(&args)
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .map_err(|e| Error::Subprocess(command.clone(), "cannot spawn child".to_string(), e))?;
-        let status = child.wait().map_err(|e| {
-            Error::Subprocess(command.clone(), "cannot wait for child".to_string(), e)
-        })?;
-        if !status.success() {
-            return Err(Error::NpdmError(status));
-        }
-        infoln!("Created", "main.npdm");
 
         Ok(())
     }
 
-    /// Invoke the clean command
-    pub fn clean(&self) -> Result<(), Error> {
-        let target_dir = self.target_dir();
-        if target_dir.exists() {
-            if std::fs::remove_dir_all(&target_dir).is_err() {
-                hintln!(
-                    "Warning",
-                    "Failed to remove `{}`. Please remove it manually.",
-                    target_dir.display()
-                );
-            }
-            infoln!("Cleaned", "`{}`", target_dir.display());
-        }
-
-        Ok(())
-    }
-
-    pub fn target_dir(&self) -> PathBuf {
-        Path::new(&self.dir).join("target/megaton")
-    }
 }
 
-fn get_modified_time(path: &Path) -> Option<SystemTime> {
-    if !path.exists() {
-        return None;
+pub fn check_os() -> Result<(), Error> {
+    #[cfg(windows)]
+    {
+        return Err(Error::Windows);
     }
-    path.metadata().and_then(|m| m.modified()).ok()
+    Ok(())
 }

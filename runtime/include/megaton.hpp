@@ -59,8 +59,6 @@ extern char __module_start;
 /// Module entrypoint called by rtld
 void megaton_entrypoint(void);
 
-/// Default abort handler
-__attribute__((noreturn)) void megaton_default_abort(int code);
 }
 
 

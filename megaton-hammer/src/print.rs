@@ -56,6 +56,18 @@ pub(crate) fn error_color() -> ColorSpec {
 }
 
 #[macro_export]
+macro_rules! writeln {
+    ($($args:tt)*) => {
+        {
+            use $crate::print::*;
+            if is_enabled() {
+                println!($($args)*);
+            }
+        }
+    };
+}
+
+#[macro_export]
 macro_rules! infoln {
     ($status:expr, $($args:tt)*) => {
         {

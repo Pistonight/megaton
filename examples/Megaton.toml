@@ -6,10 +6,6 @@ name = "example"
 # note that this is an integer, not a string
 title-id = 0x01007ef00011e000
 
-# integration with the clangd langauge server
-[lang.clangd]
-output = ".clangd" # generates the .clangd file
-
 # make configuration
 [make]
 # symbol for the entry point
@@ -51,6 +47,27 @@ defines=["FOO"]       # adds a new define
 sources=["src/foo"]   # adds a new source directory
 no-default-flags=true # override the base profile to use default flags
 
+# rust configuration
+# this section is optional. only required if you want to embbed rust code in your project
+[rust]
+# by default, megaton supports rust development with std for aarch64 by linking
+# with the hermit unikernel. This means you can use a limited set of features
+# in the rust standard library, such as the std::io traits.
+#
+# If you don't want std (#![no_std]), you can set no-std to true to disable
+# std. Megaton will then use the aarch64-nintendo-switch-freestanding target
+# instead of aarch64-unknown-hermit.
+no-std = false
+# (optional) extra flags to pass to the compiler
+# default is --release --target <target>
+# see above for what <target> is
+extra-flags = ["--features", "foo"]
+
+# [rust] supports profile overriding as well
+[rust.profiles.foo]
+# ...
+
+
 # This section is optional to check if external symbols are defined
 # in a set of symbols
 [check]
@@ -59,4 +76,15 @@ symbols = [
     "some.syms" # path(s) to files that contain objdump -T output for the set of known symbols
                 # that can appear in the final binary
 ]
+# (optional) you can disallow certain instructions.
+# for example, "msr" usually causes a crash on the switch
+# each entry is interpreted as a regular expression (rust flavor)
+disallow-instructions = [
+    "^msr", 
+    "^mrs",
+    "^add\\s+x0"
+]
 
+# [check] supports profile overriding as well
+[check.profiles.foo]
+# ...

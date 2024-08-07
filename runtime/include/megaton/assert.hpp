@@ -8,13 +8,17 @@
 /// Format a panic message.
 extern "C" const char* megaton_format_panic_message(const char* file, u32 line, const char* msg);
 
+/// Default abort handler
+extern "C" attr_noreturn_ void megaton_default_abort(int code);
+
 /// Bootstrapped on the Rust side
 extern "C" {
 /// Abort handler defined on Rust side
-extern attr_noreturn_ void megaton_abort(int code);
+extern attr_noreturn_ void megaton_abort();
 
 /// Panic handler defined on Rust side
 extern attr_noreturn_ void megaton_panic(const char* msg);
+
 }
 
 /* Assertion macros */

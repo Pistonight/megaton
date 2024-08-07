@@ -4,16 +4,13 @@ use std::{collections::BTreeMap, path::Path};
 
 use serde::{de::Visitor, Deserialize, Serialize};
 
-use crate::error::Error;
+use crate::{error::Error, stdio};
 
 /// Config data read from Megaton.toml
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MegatonConfig {
     /// The `[module]` section
     pub module: Module,
-
-    /// The `[lang]` section
-    pub lang: Option<Lang>,
 
     /// The `[make]` section
     pub make: ProfileContainer<Make>,
@@ -28,9 +25,7 @@ impl MegatonConfig {
     where
         S: AsRef<Path>,
     {
-        let path = path.as_ref();
-        let config = std::fs::read_to_string(path)
-            .map_err(|e| Error::AccessFile(path.display().to_string(), e))?;
+        let config = stdio::read_file(path)?;
         let config = toml::from_str(&config).map_err(|e| Error::ParseConfig(e.to_string()))?;
         Ok(config)
     }
@@ -44,34 +39,39 @@ pub struct Module {
     pub name: String,
     /// The title ID as a 64-bit integer, used for generating the npdm file.
     pub title_id: u64,
+    /// Set the profile to use when profile is "none"
+    pub default_profile: Option<String>,
+    /// Disallow building the default profile
+    #[serde(default)]
+    pub no_default_profile: bool,
 }
 
 impl Module {
-    /// Get the title ID as a lower-case hex string
+    /// Get the title ID as a lower-case hex string (without the `0x` prefix)
     pub fn title_id_hex(&self) -> String {
         format!("{:016x}", self.title_id)
     }
 }
 
-/// Config in the `[lang]` section
+/// Config in the `[rust]` section
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub struct Lang {
-    /// Options for the clangd language server
-    pub clangd: Option<LangClangd>,
+pub struct Rust {
+    /// If the module should be built without linking to the std crate.
+    ///
+    /// If true, the target will be aarch64-nintendo-switch-freestanding. Otherwise it
+    /// will be aarch64-unknown-hermit and the binary will include the hermit kernel.
+    pub no_std: Option<bool>,
+    
+    /// Additional build flags to pass to cargo
+    #[serde(default)]
+    pub build_flags: Vec<String>,
 }
 
-/// Language options for clangd
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct LangClangd {
-    /// The path to output the `.clangd` file
-    pub output: String,
-}
-
-impl Default for LangClangd {
-    fn default() -> Self {
-        Self {
-            output: ".clangd".to_string(),
+impl Profilable for Rust {
+    fn extend(&mut self, other: &Self) {
+        if let Some(no_std) = other.no_std {
+            self.no_std = Some(no_std);
         }
     }
 }
@@ -137,12 +137,17 @@ pub struct Check {
     /// Paths to *.syms file (output of objdump) that contains dynamic symbols accessible by the module
     #[serde(default)]
     pub symbols: Vec<String>,
+    /// Instructions to disallow (like `"msr"`). Values are regular expressions.
+    #[serde(default)]
+    pub disallowed_instructions: Vec<String>,
 }
 
 impl Profilable for Check {
     fn extend(&mut self, other: &Self) {
         self.ignore.extend(other.ignore.iter().cloned());
         self.symbols.extend(other.symbols.iter().cloned());
+        self.disallowed_instructions
+            .extend(other.disallowed_instructions.iter().cloned());
     }
 }
 
