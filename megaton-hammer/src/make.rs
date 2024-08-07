@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
 use crate::stdio::{args, ChildBuilder, self, PathExt, root_rel};
-use crate::{errorln, infoln, MegatonConfig, MegatonHammer, Paths};
+use crate::{hintln, errorln, infoln, MegatonConfig, MegatonHammer, Paths};
 
 macro_rules! format_makefile_template {
     ($($args:tt)*) => {
@@ -53,7 +53,7 @@ DEFAULT_CXXFLAGS := \
     -fno-asynchronous-unwind-tables \
     -fno-unwind-tables \
     -fpermissive \
-    -std=gnu++20 \
+    -std=c++20 \
 
 DEFAULT_ASFLAGS := -g
 DEFAULT_LDFLAGS := \
@@ -265,18 +265,19 @@ impl CCBuilder {
     }
 }
 
-pub fn make_elf(paths: &Paths) -> Result<(), Error> {
-    invoke_make(paths, "elf", true)
+pub fn make_elf(paths: &Paths, verbose: bool) -> Result<(), Error> {
+    invoke_make(paths, "elf", true, verbose)
 }
 
-pub fn make_nso(paths: &Paths) -> Result<(), Error> {
-    invoke_make(paths, "nso", false)
+pub fn make_nso(paths: &Paths, verbose: bool) -> Result<(), Error> {
+    invoke_make(paths, "nso", false, verbose)
 }
 
 fn invoke_make(
     paths: &Paths,
     target: &str,
     save_compile_commands: bool,
+    verbose: bool,
 ) -> Result<(), Error>
 {
     let j_flag = format!("-j{}", num_cpus::get());
@@ -310,6 +311,10 @@ fn invoke_make(
         let stdout = BufReader::new(stdout);
         for line in stdout.lines() {
             if let Ok(line) = line {
+                if verbose {
+                    hintln!("Verbose", "{}", line);
+                }
+
                 // hide some outputs
                 if line.starts_with("built ...") {
                     continue;
@@ -337,6 +342,9 @@ fn invoke_make(
         let stderr = BufReader::new(stderr);
         for line in stderr.lines() {
             if let Ok(line) = line {
+                if verbose {
+                    hintln!("Verbose", "{}", line);
+                }
                 // clean the error output
                 if line.starts_with("make: ***") {
                     continue;

@@ -63,6 +63,10 @@ pub struct BuildOptions {
     /// Suppress output
     #[clap(short, long)]
     pub quiet: bool,
+
+    /// Print verbose output from commands
+    #[clap(short, long)]
+    pub verbose: bool,
 }
 
 /// Paths used by the program. All paths are absolute
@@ -305,7 +309,7 @@ impl MegatonHammer {
         let paths = paths.pre_make(&config.module.name)?;
         let elf_modified_time = stdio::get_modified_time(&paths.elf).ok();
         infoln!("Making", "{}", root_rel!(paths.elf)?.display());
-        make::make_elf(&paths)?;
+        make::make_elf(&paths, self.options.verbose)?;
         infoln!("Made", "{}", root_rel!(paths.elf)?.display());
         let new_elf_modified_time = stdio::get_modified_time(&paths.elf).ok();
         if new_elf_modified_time.is_none() {
@@ -320,7 +324,7 @@ impl MegatonHammer {
         }
 
         infoln!("Making", "{}", root_rel!(paths.nso)?.display());
-        make::make_nso(&paths)?;
+        make::make_nso(&paths, self.options.verbose)?;
         infoln!(
             "Finished",
             "{} (profile `{profile}`)",
