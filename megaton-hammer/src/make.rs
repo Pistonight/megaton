@@ -346,7 +346,10 @@ fn invoke_make(
                     hintln!("Verbose", "{}", line);
                 }
                 // clean the error output
-                if line.starts_with("make: ***") {
+                if let Some(line) = line.strip_prefix("make: *** ") {
+                    if line.trim().ends_with("Stop.") {
+                        errorln!("Error", "{}", line);
+                    }
                     continue;
                 }
                 if line == "compilation terminated." {
