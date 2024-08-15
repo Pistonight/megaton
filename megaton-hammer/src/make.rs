@@ -11,8 +11,8 @@ use std::io::{BufRead, BufReader};
 use serde::{Deserialize, Serialize};
 
 use crate::error::Error;
-use crate::stdio::{args, ChildBuilder, self, PathExt, root_rel};
-use crate::{hintln, errorln, infoln, MegatonConfig, MegatonHammer, Paths};
+use crate::stdio::{self, args, root_rel, ChildBuilder, PathExt};
+use crate::{errorln, hintln, infoln, MegatonConfig, MegatonHammer, Paths};
 
 macro_rules! format_makefile_template {
     ($($args:tt)*) => {
@@ -137,6 +137,8 @@ macro_rules! default_or_empty {
 }
 
 impl MegatonConfig {
+    // pub fn check_make_sources(&self, paths: &Paths) -> Result<(), Error> {
+    // }
     /// Create the Makefile content from the config
     pub fn create_makefile(&self, paths: &Paths, cli: &MegatonHammer) -> Result<String, Error> {
         let mut root = paths.root.display().to_string();
@@ -278,8 +280,7 @@ fn invoke_make(
     target: &str,
     save_compile_commands: bool,
     verbose: bool,
-) -> Result<(), Error>
-{
+) -> Result<(), Error> {
     let j_flag = format!("-j{}", num_cpus::get());
     let mut child = ChildBuilder::new("make")
         .args(args![
@@ -291,10 +292,14 @@ fn invoke_make(
             "-f",
             "../makefile",
             target
-        ]).piped().spawn()?;
+        ])
+        .piped()
+        .spawn()?;
 
     // load existing compile commands, since make may not execute all the targets
     let mut compile_commands = BTreeMap::new();
+    let mut cc_modified = false;
+    let cc_old_size = compile_commands.len();
     if save_compile_commands && paths.cc_json.exists() {
         if let Ok(cc_json) = stdio::read_file(&paths.cc_json) {
             if let Ok(cc_vec) = serde_json::from_str::<Vec<CompileCommand>>(&cc_json) {
@@ -315,10 +320,11 @@ fn invoke_make(
                     hintln!("Verbose", "{}", line);
                 }
 
-                // hide some outputs
-                if line.starts_with("built ...") {
+                if let Some(line) = line.strip_prefix("built ...") {
+                    infoln!("Built", "{}", line.trim());
                     continue;
                 }
+                // hide some outputs
                 if line.ends_with("up to date.") {
                     continue;
                 }
@@ -328,7 +334,15 @@ fn invoke_make(
                     if let Ok(file_path) = paths.from_root(&compile_command.file) {
                         infoln!("Compiling", "{}", file_path.display());
                     }
-                    compile_commands.insert(compile_command.file.clone(), compile_command);
+                    compile_commands
+                        .entry(compile_command.file.clone())
+                        .and_modify(|cc| {
+                            if cc != &compile_command {
+                                cc_modified = true;
+                                *cc = compile_command.clone();
+                            }
+                        })
+                        .or_insert_with(|| compile_command.clone());
                     continue;
                 }
                 if let Some(line) = line.strip_prefix("linking ") {
@@ -339,6 +353,7 @@ fn invoke_make(
     }
 
     if let Some(stderr) = child.take_stderr() {
+        let mut clean_hinted = false;
         let stderr = BufReader::new(stderr);
         for line in stderr.lines() {
             if let Ok(line) = line {
@@ -349,6 +364,12 @@ fn invoke_make(
                 if let Some(line) = line.strip_prefix("make: *** ") {
                     if line.trim().ends_with("Stop.") {
                         errorln!("Error", "{}", line);
+                    }
+                    if line.trim().starts_with("No rule to make") {
+                        if !clean_hinted {
+                            clean_hinted = true;
+                            hintln!("Hint", "Try running with `--clean` to remove stale rules");
+                        }
                     }
                     continue;
                 }
@@ -365,7 +386,10 @@ fn invoke_make(
         return Err(Error::MakeError);
     }
 
-    if save_compile_commands {
+    if cc_old_size != compile_commands.len() {
+        cc_modified = true;
+    }
+    if cc_modified && save_compile_commands {
         let vec = compile_commands.into_values().collect::<Vec<_>>();
 
         match serde_json::to_string_pretty(&vec) {

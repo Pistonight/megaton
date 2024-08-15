@@ -1,0 +1,103 @@
+# An example Megaton.toml file
+[module]
+# name of the module. Used as output name (example.nso) and NX module name.
+name = "example"
+# title id of the program you are targeting. For example, BOTW:
+# note that this is an integer, not a string
+title-id = 0x01007ef00011e000
+
+# (Optional) default profile to build when no profile or "none" is specified
+# If set to empty, a profile must be specified when building (e.g. megaton -p foo)
+default-profile = "foo"
+
+# build configuration - directories, flags, etc
+[build]
+# symbol for the entry point (the main function)
+entry = "my_main"
+
+# The source and include directories. Relative to root of the project (where Megaton.toml is)
+# sources are searched recursively in the directories
+sources = ["src"]
+# Include directories where headers are (-I)
+includes = ["inc", "libs/example/include"]
+
+# Library directories where libraries are (-L)
+libpaths = ["libs/example/lib"]
+# Libraries to link with (-l)
+libraries = ["example"] 
+
+# linker scripts (relative to project root)
+ldscripts = ["linker.ld"]
+
+
+# Compiler and Linker flags
+# If something is not specified, megaton will include a set of default flags
+# (equivalent to ["<default>"]). Specify [] to use no flags at all
+[build.flags]
+# Flags shared for all source files and linker
+common = ["<default>"] 
+# Flags shared for all C/C++ source files.
+# Don't put the -I flags here. Use `build.includes` above
+# so megaton can resolve the absolute path
+c = ["<default>", "-DDEBUG", "-g", "-Wall"] 
+# Additional flags just for C++ source files, not .c
+cxx = ["<default>"]
+# Additional flags just for assembly source files
+as = ["<default>"]
+# Additioanl flags for the linker.
+# Don't put the -l/-L flags here. Use `build.libpaths` above
+# so megaton can infer the dependency graph
+ld = ["<default>"]
+
+# you can define additional profiles for different build options
+# the default profile is "none", here's a profile called "foo"
+# it extends the default profile and adds some of the options
+[build.profiles.foo]
+sources=["src/foo"]   # adds a new source directory
+
+[build.profiles.foo.flags]
+# adds a new define, flags from base profile are still included
+c = ["-DFOO"]   
+# Different from base profile, if you don't specify flags here
+# it means to keep the same flags as base rather than ["<default>"]
+
+# RUST IS CURRENTLY NOT USABLE
+# rust configuration
+# this section is optional. only required if you want to embbed rust code in your project
+[rust]
+# by default, megaton supports rust development with std for aarch64 by linking
+# with the hermit unikernel. This means you can use a limited set of features
+# in the rust standard library, such as the std::io traits.
+#
+# If you don't want std (#![no_std]), you can set no-std to true to disable
+# std. Megaton will then use the aarch64-nintendo-switch-freestanding target
+# instead of aarch64-unknown-hermit.
+no-std = false
+# (optional) extra flags to pass to the compiler
+# default is --release --target <target>
+# see above for what <target> is
+extra-flags = ["--features", "foo"]
+
+# [rust] supports profile overriding as well
+[rust.profiles.foo]
+# ...
+
+
+# This section is optional to check if external symbols are defined
+# in a set of symbols
+[check]
+ignore = [".text", ".data"] # ignore these symbols that are in the final binary
+# path(s) to files that contain objdump -T output for the set of known symbols
+# that can appear in the final binary
+symbols = ["some.syms"]
+# You can disallow certain instructions.
+# for example, "msr" usually causes a crash on the switch
+# each entry is interpreted as a regular expression (rust flavor)
+disallow-instructions = [
+    "<default>",
+    "^add\\s+x0"
+]
+
+# [check] supports profile overriding as well
+[check.profiles.foo]
+# ...

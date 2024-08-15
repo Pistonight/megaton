@@ -1,14 +1,15 @@
 use std::collections::BTreeSet;
 use std::io::BufRead;
 
+use regex::Regex;
+
 use crate::config::Check;
 use crate::error::Error;
+use crate::stdio::{self, args, root_rel, ChildBuilder, PathExt};
 use crate::{errorln, hintln, infoln, Paths};
-use crate::stdio::{self, args, root_rel, PathExt, ChildBuilder};
 
 /// Check ELF for issues with symbols and instructions
-pub fn check_elf(paths: &Paths, check: &Check) -> Result<(), Error>
-{
+pub fn check_elf(paths: &Paths, check: &Check) -> Result<(), Error> {
     infoln!("Checking", "{}", root_rel!(paths.elf)?.display());
 
     let mut child = ChildBuilder::new(&paths.objdump)
@@ -18,7 +19,11 @@ pub fn check_elf(paths: &Paths, check: &Check) -> Result<(), Error>
 
     let mut elf_symbols = BTreeSet::new();
     if let Some(stdout) = child.take_stdout() {
-        parse_objdump_syms("(output of `objdump -T`)", stdout.lines().flatten(), &mut elf_symbols)?;
+        parse_objdump_syms(
+            "(output of `objdump -T`)",
+            stdout.lines().flatten(),
+            &mut elf_symbols,
+        )?;
     }
 
     child.dump_stderr("Error");
@@ -47,7 +52,11 @@ pub fn check_elf(paths: &Paths, check: &Check) -> Result<(), Error>
         // since we only check when the make output is modified
         let elf_bad_path = paths.elf.with_extension("bad.elf");
         stdio::rename_file(&paths.elf, &elf_bad_path)?;
-        infoln!("Renamed", "ELF to {}", paths.from_root(elf_bad_path)?.display());
+        infoln!(
+            "Renamed",
+            "ELF to {}",
+            paths.from_root(elf_bad_path)?.display()
+        );
     }
 
     result
@@ -67,7 +76,11 @@ fn run_checks(
     for path in &check.symbols {
         let path = paths.root.join(path).canonicalize2()?;
         let file_content = stdio::read_file(&path)?;
-        parse_objdump_syms(&paths.from_root(path)?.display().to_string(), file_content.lines(), &mut loaded_symbols)?;
+        parse_objdump_syms(
+            &paths.from_root(path)?.display().to_string(),
+            file_content.lines(),
+            &mut loaded_symbols,
+        )?;
     }
 
     let missing_symbols = elf_symbols
@@ -106,10 +119,20 @@ fn run_checks(
 
     infoln!("Checked", "All symbols can be resolved!");
 
+    // These instructions will cause console to Instruction Abort
+    // (potentially due to permission or unsupported instruction?)
+    let mut disallowed_regexes = vec![
+        Regex::new(r"^msr\s*spsel")?,
+        Regex::new(r"^msr\s*daifset")?,
+        Regex::new(r"^mrs\.*daif")?,
+        Regex::new(r"^mrs\.*tpidr_el1")?,
+        Regex::new(r"^msr\s*tpidr_el1")?,
+        Regex::new(r"^hlt")?,
+    ];
     if !check.disallowed_instructions.is_empty() {
-        let mut disallowed_regexes = Vec::with_capacity(check.disallowed_instructions.len());
+        disallowed_regexes.reserve(check.disallowed_instructions.len());
         for s in &check.disallowed_instructions {
-            match regex::Regex::new(s) {
+            match Regex::new(s) {
                 Ok(regex) => disallowed_regexes.push(regex),
                 Err(e) => {
                     errorln!("Error", "Invalid regex: {}", e);
@@ -117,55 +140,66 @@ fn run_checks(
                 }
             }
         }
-        infoln!("Parsed", "{} disallowed instruction patterns", disallowed_regexes.len());
 
-        let detected_disallowed_instructions = elf_instructions
-            .iter()
-            .filter(|inst| {
-                for regex in &disallowed_regexes {
-                    if regex.is_match(&inst.1) {
-                        return true;
-                    }
+        infoln!(
+            "Parsed",
+            "{} extra disallowed instruction patterns",
+            check.disallowed_instructions.len()
+        );
+    }
+
+    let detected_disallowed_instructions = elf_instructions
+        .iter()
+        .filter(|inst| {
+            for regex in &disallowed_regexes {
+                if regex.is_match(&inst.1) {
+                    return true;
                 }
-                false
-            })
-            .collect::<Vec<_>>();
+            }
+            false
+        })
+        .collect::<Vec<_>>();
 
-        if !detected_disallowed_instructions.is_empty() {
-            errorln!("Error", "There are disallowed instructions:");
-            errorln!("Error", "");
-            for (addr, inst) in detected_disallowed_instructions.iter().take(10) {
-                errorln!("Error", "  {addr}: {inst}");
-            }
-            if detected_disallowed_instructions.len() > 10 {
-                errorln!("Error", "  ... ({} more)", detected_disallowed_instructions.len() - 10);
-            }
-            errorln!("Error", "");
+    if !detected_disallowed_instructions.is_empty() {
+        errorln!("Error", "There are unsupported/disallowed instructions:");
+        errorln!("Error", "");
+        for (addr, inst) in detected_disallowed_instructions.iter().take(10) {
+            errorln!("Error", "  {addr}: {inst}");
+        }
+        if detected_disallowed_instructions.len() > 10 {
             errorln!(
                 "Error",
-                "Found {} disallowed instructions!",
-                detected_disallowed_instructions.len()
+                "  ... ({} more)",
+                detected_disallowed_instructions.len() - 10
             );
-
-            let detected_disallowed_instructions = detected_disallowed_instructions
-                .iter()
-                .map(|(addr, inst)| format!("{}: {}", addr, inst))
-                .collect::<Vec<_>>()
-                .join("\n");
-            let disallowed_instructions_path = paths.make.join("disallowed_instructions.txt");
-            stdio::write_file(&disallowed_instructions_path, &detected_disallowed_instructions)?;
-            hintln!(
-                "Saved",
-                "All disallowed instructions to {}",
-                paths.from_root(disallowed_instructions_path)?.display()
-            );
-
-            return Err(Error::CheckError);
         }
+        errorln!("Error", "");
+        errorln!(
+            "Error",
+            "Found {} disallowed instructions!",
+            detected_disallowed_instructions.len()
+        );
 
-        infoln!("Checked", "No disallowed instructions found!");
+        let detected_disallowed_instructions = detected_disallowed_instructions
+            .iter()
+            .map(|(addr, inst)| format!("{}: {}", addr, inst))
+            .collect::<Vec<_>>()
+            .join("\n");
+        let disallowed_instructions_path = paths.make.join("disallowed_instructions.txt");
+        stdio::write_file(
+            &disallowed_instructions_path,
+            &detected_disallowed_instructions,
+        )?;
+        hintln!(
+            "Saved",
+            "All disallowed instructions to {}",
+            paths.from_root(disallowed_instructions_path)?.display()
+        );
 
+        return Err(Error::CheckError);
     }
+
+    infoln!("Checked", "No disallowed instructions found!");
 
     Ok(())
 }
@@ -227,22 +261,25 @@ where
 {
     infoln!("Parsing", "{}", id);
 
-    raw_instructions.into_iter().flat_map(|line| {
-        let line = line.as_ref();
-        // Example
-        // 0000000000000000 <__code_start__>:
-        //        0:	14000008 	b	20 <entrypoint>
-        //        4:	0001a6e0 	.word	0x0001a6e0
-        //        8:	d503201f 	nop
-        //          ^ tab       _^ tab
-        let mut parts = line.splitn(2, ":\t");
-        let addr = parts.next()?.to_string();
-        let bytes_and_asm = parts.next()?;
-        let mut parts = bytes_and_asm.splitn(2, " \t");
-        let _bytes = parts.next()?;
-        //14000008 	b	20 <entrypoint>
-        let inst = parts.next()?;
-        //b	20 <entrypoint>
-        Some((addr, inst.to_string()))
-    }).collect()
+    raw_instructions
+        .into_iter()
+        .flat_map(|line| {
+            let line = line.as_ref();
+            // Example
+            // 0000000000000000 <__code_start__>:
+            //        0:	14000008 	b	20 <entrypoint>
+            //        4:	0001a6e0 	.word	0x0001a6e0
+            //        8:	d503201f 	nop
+            //          ^ tab       _^ tab
+            let mut parts = line.splitn(2, ":\t");
+            let addr = parts.next()?.to_string();
+            let bytes_and_asm = parts.next()?;
+            let mut parts = bytes_and_asm.splitn(2, " \t");
+            let _bytes = parts.next()?;
+            //14000008 	b	20 <entrypoint>
+            let inst = parts.next()?;
+            //b	20 <entrypoint>
+            Some((addr, inst.to_string()))
+        })
+        .collect()
 }

@@ -1,16 +1,12 @@
-//! Utilities and wrappers for std io, fs, path and process.
-
-use std::io::{BufReader, BufRead};
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio, ExitStatus, ChildStderr, ChildStdout, ChildStdin};
+//! Subprocess Utilities
 use std::ffi::OsStr;
+use std::io::{BufRead, BufReader};
+use std::path::{Path, PathBuf};
+use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
 
-use crate::error::Error;
-use crate::{errorln, hintln};
-
-use filetime::FileTime;
+use crate::system::{self, Error};
 
 /// Convenience macro for building an argument list
 macro_rules! args {
@@ -21,61 +17,7 @@ macro_rules! args {
         }
     };
 }
-pub (crate) use args;
-
-/// Check if a binary exists, or return an error
-macro_rules! check_tool {
-    ($tool:literal) => {
-        {
-            which::which($tool).map_err(|_| {
-                Error::MissingTool(
-                    $tool.to_string(),
-                    format!("Please ensure it is installed in the system.")
-                )
-            })
-        }
-    };
-    ($tool:literal, $package:literal) => {
-        {
-            which::which($tool).map_err(|_| {
-                Error::MissingTool(
-                    $tool.to_string(),
-                    format!("Please ensure {} is installed in the system.", $package)
-                )
-            })
-        }
-    };
-    ($tool:expr, $package:literal) => {
-        {
-            let os_str: &std::ffi::OsStr = $tool.as_ref();
-            which::which(os_str).map_err(|_| {
-                Error::MissingTool(
-                    $tool.to_string_lossy().into_owned(),
-                    format!("Please ensure {} is installed in the system.", $package)
-                )
-            })
-        }
-    };
-}
-pub (crate) use check_tool;
-
-/// Check and get an environment variable, or return an error
-macro_rules! check_env {
-    ($env:literal, $message:literal) => {
-        {
-            let x = std::env::var($env).unwrap_or_default();
-            if x.is_empty() {
-                Err(Error::MissingEnv(
-                    $env.to_string(),
-                    $message.to_string()
-                ))
-            } else {
-                Ok(x)
-            }
-        }
-    };
-}
-pub (crate) use check_env;
+pub(crate) use args;
 
 /// Convenience wrapper around `Command` for building a child process
 pub struct ChildBuilder {
@@ -163,13 +105,17 @@ impl ChildBuilder {
 
     pub fn spawn(mut self) -> Result<ChildProcess, Error> {
         // we don't care about escaping it properly, just for debugging
-        let args_str = self.command
+        let args_str = self
+            .command
             .get_args()
             .map(|s| s.to_string_lossy().to_string())
             .collect::<Vec<_>>()
             .join(" ");
         let command_str = format!("{} {}", self.arg0, args_str);
-        let child = self.command.spawn().map_err(|e| Error::SpawnChild(command_str.clone(), e))?;
+        let child = self
+            .command
+            .spawn()
+            .map_err(|e| Error::SpawnChild(command_str.clone(), e))?;
         Ok(ChildProcess { command_str, child })
     }
 }
@@ -182,7 +128,10 @@ pub struct ChildProcess {
 
 impl ChildProcess {
     pub fn take_stdin(&mut self) -> ChildStdin {
-        self.child.stdin.take().expect("stdin is not piped! Need to call `pipe_stdin` on the builder!")
+        self.child
+            .stdin
+            .take()
+            .expect("stdin is not piped! Need to call `pipe_stdin` on the builder!")
     }
     /// Take the stdout of the child process and wrap it in a `BufReader`
     pub fn take_stdout(&mut self) -> Option<BufReader<ChildStdout>> {
@@ -229,13 +178,14 @@ impl ChildProcess {
             recv,
             join_handles: handles,
         }
-
     }
-
 
     /// Wait for the child process to exit
     pub fn wait(mut self) -> Result<ExitStatus, Error> {
-        let status = self.child.wait().map_err(|e| Error::WaitForChild(self.command_str.clone(), e))?;
+        let status = self
+            .child
+            .wait()
+            .map_err(|e| Error::WaitForChild(self.command_str.clone(), e))?;
         Ok(status)
     }
 
@@ -243,7 +193,7 @@ impl ChildProcess {
     pub fn dump_stderr(&mut self, prefix: &str) {
         if let Some(stderr) = self.take_stderr() {
             for line in TermLines::new(stderr).flatten() {
-                errorln!(prefix, "{line}");
+                system::errorln!(prefix, "{line}");
             }
         }
     }
@@ -252,7 +202,7 @@ impl ChildProcess {
     pub fn dump_stdout(&mut self, prefix: &str) {
         if let Some(stderr) = self.take_stdout() {
             for line in TermLines::new(stderr).flatten() {
-                hintln!(prefix, "{line}");
+                system::hintln!(prefix, "{line}");
             }
         }
     }
@@ -263,18 +213,16 @@ impl ChildProcess {
             match msg {
                 TermOut::Stdout(line) => {
                     if let Some(prefix) = stdout_prefix {
-                        hintln!(prefix, "{line}");
+                        system::hintln!(prefix, "{line}");
                     }
-                },
+                }
                 TermOut::Stderr(line) => {
                     if let Some(prefix) = stderr_prefix {
-                        errorln!(prefix, "{line}");
+                        system::errorln!(prefix, "{line}");
                     }
-                },
+                }
             }
-
         }
-
     }
 }
 
@@ -326,12 +274,18 @@ impl Into<String> for TermOut {
 
 /// Wrapper for reader that buffers the output until CR or LF
 #[derive(Debug)]
-pub struct TermLines<R> where R: BufRead {
+pub struct TermLines<R>
+where
+    R: BufRead,
+{
     read: R,
     buffer: Vec<u8>,
 }
 
-impl<R> TermLines<R> where R: BufRead {
+impl<R> TermLines<R>
+where
+    R: BufRead,
+{
     pub fn new(read: R) -> Self {
         Self {
             read,
@@ -340,7 +294,10 @@ impl<R> TermLines<R> where R: BufRead {
     }
 }
 
-impl<R> Iterator for TermLines<R> where R: BufRead {
+impl<R> Iterator for TermLines<R>
+where
+    R: BufRead,
+{
     type Item = std::io::Result<String>;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -362,129 +319,4 @@ impl<R> Iterator for TermLines<R> where R: BufRead {
             self.buffer.push(c);
         }
     }
-
 }
-
-/// Convenience wrapper for std::fs::remove_file
-pub fn remove_file<P>(path: P) -> Result<(), Error>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    if !path.exists() {
-        return Ok(());
-    }
-    std::fs::remove_file(path).map_err(|e| Error::RemoveFile(path.display().to_string(), e))
-}
-
-pub fn rename_file<P, Q>(from: P, to: Q) -> Result<(), Error>
-where
-    P: AsRef<Path>,
-    Q: AsRef<Path>,
-{
-    let from = from.as_ref();
-    let to = to.as_ref();
-    std::fs::rename(from, to).map_err(|e| Error::RenameFile(from.display().to_string(), to.display().to_string(), e))
-}
-
-/// Convenience wrapper for std::fs::remove_dir_all
-pub fn remove_directory<P>(path: P) -> Result<(), Error>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    if !path.exists() {
-        return Ok(());
-    }
-    std::fs::remove_dir_all(path).map_err(|e| Error::RemoveDirectory(path.display().to_string(), e))
-}
-
-/// Convenience wrapper for std::fs::read_to_string
-pub fn read_file<P>(path: P) -> Result<String, Error>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    std::fs::read_to_string(path).map_err(|e| Error::ReadFile(path.display().to_string(), e))
-}
-
-/// Convenience wrapper for std::fs::write
-pub fn write_file<P, S>(path: P, content: S) -> Result<(), Error>
-where
-    P: AsRef<Path>,
-    S: AsRef<[u8]>,
-{
-    let path = path.as_ref();
-    std::fs::write(path, content).map_err(|e| Error::WriteFile(path.display().to_string(), e))
-}
-
-/// Get the modified time for a file. Returns None if the file does not exist or an error occurs
-pub fn get_modified_time<P>(path: P) -> Result<FileTime, Error>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    if !path.exists() {
-        return Err(Error::NotFound(path.display().to_string()));
-    }
-
-    path.metadata().map(|x|FileTime::from_last_modification_time(&x)).map_err(|e| Error::ReadFile(path.display().to_string(), e))
-}
-
-/// Set the modified time for a file
-pub fn set_modified_time<P>(path: P, time: FileTime) -> Result<(), Error>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    filetime::set_file_mtime(path, time).map_err(|e| Error::SetModifiedTime(path.display().to_string(), e))
-}
-
-pub fn ensure_directory<P>(path: P) -> Result<(), Error>
-where
-    P: AsRef<Path>,
-{
-    let path = path.as_ref();
-    if !path.exists() {
-        std::fs::create_dir_all(path).map_err(|e| Error::CreateDirectory(path.display().to_string(), e))?;
-    }
-    Ok(())
-}
-
-pub trait PathExt {
-    /// Wrapper for std::path::canonicalize, but maps the error to our own
-    fn canonicalize2(&self) -> Result<PathBuf, Error>;
-
-    /// Get the relative path from base to self. Base must be an absolute path.
-    /// Will error if self or base does not exist.
-    fn from_base<P>(&self, base: P) -> Result<PathBuf, Error>
-    where
-        P: AsRef<Path>;
-
-}
-
-impl<P> PathExt for P where P: AsRef<Path> {
-    fn canonicalize2(&self) -> Result<PathBuf, Error>
-    {
-        let path = self.as_ref();
-        path.canonicalize().map_err(|x| Error::InvalidPath(path.display().to_string(), x))
-    }
-
-    fn from_base<PBase>(&self, base: PBase) -> Result<PathBuf, Error>
-    where
-        PBase: AsRef<Path>,
-    {
-        let path = self.as_ref();
-        let base = base.as_ref();
-        assert!(base.is_absolute());
-        Ok(pathdiff::diff_paths(path, base).unwrap_or(path.to_path_buf()))
-    }
-}
-
-macro_rules! root_rel {
-    ($paths:ident.$member:ident) => {
-        $paths.$member.from_base(&$paths.root)
-    };
-}
-pub(crate) use root_rel;
-

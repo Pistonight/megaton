@@ -1,18 +1,17 @@
-use std::io::Write;
-use std::{cell::RefCell, io::IsTerminal};
+//! Print Utilities
+
+use std::cell::RefCell;
+use std::io::{IsTerminal, Write};
 use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
 
-static mut ENABLED: bool = true;
-#[inline]
-pub fn set_enabled(enabled: bool) {
-    unsafe {
-        ENABLED = enabled;
-    }
+static mut VERBOSE: bool = false;
+
+pub fn is_verbose() -> bool {
+    unsafe { VERBOSE }
 }
 
-#[inline]
-pub fn is_enabled() -> bool {
-    unsafe { ENABLED }
+pub fn enable_verbose() {
+    unsafe { VERBOSE = true }
 }
 
 thread_local! {
@@ -37,74 +36,66 @@ pub(crate) fn print_status_tag(color_spec: &ColorSpec, tag: &str) {
     });
 }
 
-pub(crate) fn info_color() -> ColorSpec {
+pub fn info_color() -> ColorSpec {
     let mut x = ColorSpec::new();
     x.set_fg(Some(Color::Green)).set_bold(true);
     x
 }
 
-pub(crate) fn hint_color() -> ColorSpec {
+pub fn hint_color() -> ColorSpec {
     let mut x = ColorSpec::new();
     x.set_fg(Some(Color::Yellow)).set_bold(true);
     x
 }
 
-pub(crate) fn error_color() -> ColorSpec {
+pub fn error_color() -> ColorSpec {
     let mut x = ColorSpec::new();
     x.set_fg(Some(Color::Red)).set_bold(true);
     x
 }
 
-#[macro_export]
-macro_rules! writeln {
-    ($($args:tt)*) => {
-        {
-            use $crate::print::*;
-            if is_enabled() {
-                println!($($args)*);
-            }
-        }
-    };
-}
-
-#[macro_export]
 macro_rules! infoln {
     ($status:expr, $($args:tt)*) => {
         {
-            use $crate::print::*;
-            if is_enabled() {
-                let status = { $status };
-                print_status_tag(&info_color(), status);
-                println!($($args)*);
-            }
+            let status = { $status };
+            $crate::system::print_status_tag(&$crate::system::info_color(), status);
+            println!($($args)*);
         }
     };
 }
+pub(crate) use infoln;
 
-#[macro_export]
 macro_rules! errorln {
     ($status:expr, $($args:tt)*) => {
         {
-            use $crate::print::*;
-            if is_enabled() {
-                let status = { $status };
-                print_status_tag(&error_color(), status);
-                println!($($args)*);
-            }
+            let status = { $status };
+            $crate::system::print_status_tag(&$crate::system::error_color(), status);
+            println!($($args)*);
         }
     };
 }
+pub(crate) use errorln;
 
-#[macro_export]
 macro_rules! hintln {
     ($status:expr, $($args:tt)*) => {
         {
-            use $crate::print::*;
-            if is_enabled() {
+            let status = { $status };
+            $crate::system::print_status_tag(&$crate::system::hint_color(), status);
+            println!($($args)*);
+        }
+    };
+}
+pub(crate) use hintln;
+
+macro_rules! verboseln {
+    ($status:expr, $($args:tt)*) => {
+        {
+            if ($crate::system::is_verbose()) {
                 let status = { $status };
-                print_status_tag(&hint_color(), status);
+                $crate::system::print_status_tag(&$crate::system::hint_color(), status);
                 println!($($args)*);
             }
         }
     };
 }
+pub(crate) use verboseln;

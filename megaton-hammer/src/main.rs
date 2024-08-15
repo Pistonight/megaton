@@ -1,12 +1,16 @@
 use clap::Parser;
-use megatonhammer::MegatonHammer;
+use megaton_hammer::MegatonHammer;
 fn main() {
-    megatonhammer::print::set_enabled(true);
     let cli = MegatonHammer::parse();
-    let result = match &cli.command {
-        Some(x) => x.run(),
-        None => cli.build()
-    };
+    if cli.options.verbose {
+        megaton_hammer::system::enable_verbose();
+    }
+    // let result = match &cli.command {
+    //     Some(x) => x.run(&cli),
+    //     None => 
+    //     cli.build(),
+    // };
+        let result = cli.build();
     if let Err(e) = result {
         e.print();
         std::process::exit(1);

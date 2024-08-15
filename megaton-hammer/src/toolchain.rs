@@ -1,23 +1,25 @@
 //! Script for building custom rustc toolchain and libraries
 
-use std::io::{Write, BufRead};
+use std::io::{BufRead, Write};
 use std::path::Path;
 
-use crate::{infoln, hintln};
-use crate::stdio::{self, check_tool, check_env, PathExt, ChildBuilder, args, ChildProcess};
 use crate::error::Error;
+use crate::stdio::{self, args, check_env, check_tool, ChildBuilder, ChildProcess, PathExt};
+use crate::{hintln, infoln};
 
 pub fn build() -> Result<(), Error> {
     infoln!("Building", "Megaton toolchain");
 
-    let megaton_home = check_env!("MEGATON_HOME", 
-    "Please set MEGATON_HOME to the root of your local megaton repository")?;
+    let megaton_home = check_env!(
+        "MEGATON_HOME",
+        "Please set MEGATON_HOME to the root of your local megaton repository"
+    )?;
     let megaton_home = megaton_home.canonicalize2()?;
     hintln!("Path", "MEGATON_HOME = {}", megaton_home.display());
-    
+
     let toolchain_path = megaton_home.join("toolchain").canonicalize2()?;
     hintln!("Path", "Toolchain = {}", toolchain_path.display());
-    
+
     check_tool!("rustup", "Rust")?;
     check_tool!("rustc", "Rust")?;
     check_tool!("git")?;
@@ -25,9 +27,6 @@ pub fn build() -> Result<(), Error> {
 
     setup_rustc_repo(&toolchain_path)?;
     build_rustc(&toolchain_path)?;
-
-
-
 
     todo!();
 }
@@ -41,15 +40,15 @@ fn setup_rustc_repo(toolchain_path: &Path) -> Result<(), Error> {
     }
     let mut clone_command = ChildBuilder::new("git")
         .args(args![
-            "clone", 
-            "https://github.com/rust-lang/rust", 
+            "clone",
+            "https://github.com/rust-lang/rust",
             rustc_path,
             "--depth",
             "1",
             "--progress"
-
         ])
-        .piped().spawn()?;
+        .piped()
+        .spawn()?;
 
     clone_command.dump(None, Some("Git"), 5);
     let status = clone_command.wait()?;
@@ -60,15 +59,20 @@ fn setup_rustc_repo(toolchain_path: &Path) -> Result<(), Error> {
 
     let mut setup_command = ChildBuilder::new("./x")
         .current_dir(&rustc_path)
-        .args(args![
-            "setup",
-        ])
+        .args(args!["setup",])
         .pipe_stdin()
-        .piped().spawn()?;
+        .piped()
+        .spawn()?;
 
     let setup_input = stdio::read_file(toolchain_path.join("rustc-setup.txt"))?;
-    if setup_command.take_stdin().write_all(setup_input.as_bytes()).is_err() {
-        return Err(Error::BuildToolchain("Failed to write rustc setup input".to_string()));
+    if setup_command
+        .take_stdin()
+        .write_all(setup_input.as_bytes())
+        .is_err()
+    {
+        return Err(Error::BuildToolchain(
+            "Failed to write rustc setup input".to_string(),
+        ));
     }
 
     stream_rustc_output(&mut setup_command);
@@ -81,10 +85,9 @@ fn setup_rustc_repo(toolchain_path: &Path) -> Result<(), Error> {
     let config_path = rustc_path.join("config.toml");
     let mut config_toml = stdio::read_file(&config_path)?;
     let mut rustc_command = ChildBuilder::new("rustc")
-        .args(args![
-            "-vV",
-        ])
-        .piped().spawn()?;
+        .args(args!["-vV",])
+        .piped()
+        .spawn()?;
 
     let mut host_triple = None;
     match rustc_command.take_stdout() {
@@ -96,16 +99,25 @@ fn setup_rustc_repo(toolchain_path: &Path) -> Result<(), Error> {
                 }
             }
         }
-        _ => return Err(Error::BuildToolchain("Failed to get rustc host triple".to_string())),
+        _ => {
+            return Err(Error::BuildToolchain(
+                "Failed to get rustc host triple".to_string(),
+            ))
+        }
     }
 
-    let host_triple = host_triple.ok_or(Error::BuildToolchain("Failed to get rustc host triple".to_string()))?;
-    config_toml.push_str(&format!(r#"
+    let host_triple = host_triple.ok_or(Error::BuildToolchain(
+        "Failed to get rustc host triple".to_string(),
+    ))?;
+    config_toml.push_str(&format!(
+        r#"
 [build]
 build-stage = 1
 host = ["{0}"]
 target = ["{0}", "aarch64-unknown-hermit", "aarch64-nintendo-switch-freestanding"]
-"#, host_triple));
+"#,
+        host_triple
+    ));
     stdio::write_file(&config_path, config_toml)?;
 
     infoln!("Configured", "rustc");
@@ -118,12 +130,8 @@ fn build_rustc(toolchain_path: &Path) -> Result<(), Error> {
     let rustc_path = toolchain_path.join("rustc");
     let mut build_command = ChildBuilder::new("./x")
         .current_dir(&rustc_path)
-        .args(args![
-            "build",
-            "--stage",
-            "1",
-            "library",
-        ]).spawn()?;
+        .args(args!["build", "--stage", "1", "library",])
+        .spawn()?;
 
     stream_rustc_output(&mut build_command);
 
@@ -134,14 +142,13 @@ fn build_rustc(toolchain_path: &Path) -> Result<(), Error> {
 
     let link_command = ChildBuilder::new("rustup")
         .current_dir(&rustc_path)
-        .args(args![
-            "toolchain",
-            "link",
-            "megaton",
-            "build/host/stage1",
-        ]).spawn()?.wait()?;
+        .args(args!["toolchain", "link", "megaton", "build/host/stage1",])
+        .spawn()?
+        .wait()?;
     if !link_command.success() {
-        return Err(Error::BuildToolchain("Failed to link rustc build artifacts".to_string()));
+        return Err(Error::BuildToolchain(
+            "Failed to link rustc build artifacts".to_string(),
+        ));
     }
     infoln!("Linked", "rustc build artifacts");
     Ok(())
