@@ -46,12 +46,11 @@ pub struct Paths {
     // /// The template json file for generating the npdm file. ($MEGATON_HOME/toolchain/npdm-template.json)
     // pub npdm_template_json: PathBuf,
 
-    // /// The target ELF (target/megaton/<profile>/<name>.elf)
-    // pub elf: PathBuf,
-    //
-    // /// The target NSO
-    // pub nso: PathBuf,
-    //
+    /// The target ELF (target/megaton/<profile>/<name>.elf)
+    pub elf: PathBuf,
+
+    /// The target NSO
+    pub nso: PathBuf,
 }
 
 macro_rules! check_dkp_tool {
@@ -75,11 +74,10 @@ macro_rules! check_dkp_tool {
 }
 
 impl Paths {
-    pub fn new(root: PathBuf, profile: &str) -> Result<Self, Error> {
+    pub fn new(root: PathBuf, profile: &str, module_name: &str) -> Result<Self, Error> {
         let mut devkitpro = None;
         let make_c = check_dkp_tool!(devkitpro, "aarch64-none-elf-gcc", "devkitA64/bin");
         let make_cpp = check_dkp_tool!(devkitpro, "aarch64-none-elf-g++", "devkitA64/bin");
-        let ld = check_dkp_tool!(devkitpro, "aarch64-none-elf-ld", "devkitA64/bin");
         let objdump = check_dkp_tool!(devkitpro, "aarch64-none-elf-objdump", "devkitA64/bin");
         let elf2nso = check_dkp_tool!(devkitpro, "elf2nso", "tools/bin");
         let npdmtool = check_dkp_tool!(devkitpro, "npdmtool", "tools/bin");
@@ -98,6 +96,8 @@ impl Paths {
         let target_o = target.join("o");
         let verfile = target.join("verfile");
         let cc_json = target.join("compile_commands.json");
+        let elf = target.join(format!("{}.elf", module_name));
+        let nso = target.join(format!("{}.nso", module_name));
 
         Ok(Self {
             root,
@@ -110,7 +110,17 @@ impl Paths {
             target_o,
             verfile,
             cc_json,
+            elf,
+            nso,
         })
+    }
+
+    /// Get the path as relative from root
+    pub fn from_root<P>(&self, path: P) -> Result<PathBuf, Error>
+    where
+        P: AsRef<Path>,
+    {
+        path.from_base(&self.root)
     }
 }
 

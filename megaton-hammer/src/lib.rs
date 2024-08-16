@@ -1,8 +1,4 @@
-use std::path::{Path, PathBuf};
-use std::time::Instant;
-
 use clap::{Parser, Subcommand};
-use serde_json::{json, Value};
 
 pub mod build;
 // pub mod make;
@@ -69,58 +65,6 @@ pub struct Options {
     #[clap(short, long)]
     pub verbose: bool,
 }
-
-// impl Paths {
-//     pub fn prepare_profile(mut self, profile: &str) -> Result<Self, Error> {
-//         let target = self.root.join("target/megaton").join(profile);
-//         if !target.exists() {
-//             stdio::ensure_directory(&target)?;
-//             infoln!("Created", "{}", target.display());
-//         }
-//         let target = target.canonicalize2()?;
-//
-//         self.target = target;
-//
-//         Ok(self)
-//     }
-//
-//     pub fn pre_makefile(mut self) -> Result<Self, Error> {
-//         let make = self.target.join("make");
-//         if !make.exists() {
-//             stdio::ensure_directory(&make)?;
-//             infoln!("Created", "{}", make.display());
-//         }
-//         let make = make.canonicalize2()?;
-//         let sources = self.target.join("sources");
-//         if !sources.exists() {
-//             stdio::ensure_directory(&sources)?;
-//             infoln!("Created", "{}", sources.display());
-//         }
-//         let sources = sources.canonicalize2()?;
-//
-//         self.make = make;
-//         self.makefile = self.target.join("makefile");
-//         self.sources = sources;
-//         Ok(self)
-//     }
-//
-//     pub fn pre_make(mut self, module_name: &str) -> Result<Self, Error> {
-//         self.makefile = self.makefile.canonicalize2()?;
-//         self.elf = self.make.join(format!("{module_name}.elf"));
-//         self.nso = self.make.join(format!("{module_name}.nso"));
-//         self.cc_json = self.make.join("compile_commands.json");
-//
-//         Ok(self)
-//     }
-//
-//     /// Get the path as relative from root
-//     pub fn from_root<P>(&self, path: P) -> Result<PathBuf, Error>
-//     where
-//         P: AsRef<Path>,
-//     {
-//         path.from_base(&self.root)
-//     }
-// }
 
 impl MegatonHammer {
     /// Build the project

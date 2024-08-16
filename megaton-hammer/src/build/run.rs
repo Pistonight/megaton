@@ -1,23 +1,20 @@
 //! The megaton build command
 
-use std::cell::LazyCell;
 use std::collections::HashMap;
-use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::BufWriter;
-use std::path::{Path, PathBuf};
-use std::sync::LazyLock;
+use std::path::Path;
+use std::rc::Rc;
 use std::time::Instant;
 
 use serde_json::{json, Value};
 use walkdir::WalkDir;
 
 use crate::build::{
-    are_deps_up_to_date, load_compile_commands, CompileCommand, Compiler, Config, Paths, SourceResult,
+    load_compile_commands, BuildPhase, CheckPhase, Config, Paths, SourceResult
 };
+use crate::build::config::Module;
 use crate::system::{self, ChildBuilder, Error, PathExt};
 use crate::Options;
-
-use super::Module;
 
 /// Run megaton build
 pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
@@ -36,7 +33,8 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         (profile, _) => profile,
     };
 
-    let paths = Paths::new(root, profile)?;
+    let paths = Paths::new(root, profile, &config.module.name)?;
+    let paths = Rc::new(paths);
 
     system::infoln!("Building", "{} (profile `{profile}`)", config.module.name);
     system::ensure_directory(&paths.target_o)?;
@@ -59,7 +57,7 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     if cc_possibly_changed {
         load_compile_commands(&paths.cc_json, &mut compile_commands);
     }
-    let compiler = Compiler::new(&paths, &entry, &build)?;
+    let compiler = BuildPhase::new(&paths, &entry, &build)?;
     let mut objects_changed = false;
     let mut objects = Vec::new();
     let mut compile_errors = Vec::new();
@@ -83,6 +81,7 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
                 SourceResult::NeedCompile(cc) => cc
             };
             objects_changed = true;
+            objects.push(cc.output.clone());
             system::infoln!("Compiling", "{}", source_path.from_base(&paths.root)?.display());
             system::verboseln!("Running", "{}", cc.arguments.join(" "));
             let result = cc.invoke()?;
@@ -108,13 +107,11 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         system::verboseln!("Saved", "compile_commands.json");
     }
 
-    let elf_name = format!("{}.elf", config.module.name);
-    let elf_path = paths.target.join(&elf_name);
-    // compile_commands not empty means sources were removed
-    // link flags can change if megaton toml changed
-    // TODO: LD scripts can change
-    // TODO: libs can change
-    let needs_linking = objects_changed || !compile_commands.is_empty() || megaton_toml_changed || !elf_path.exists();
+    let check_phase = config.check.as_ref().map(|x| {
+        let paths = Rc::clone(&paths);
+        let check = x.get_profile(profile);
+        CheckPhase::new(paths, Rc::new(check)).load_symbols()
+    });
 
     if !compile_errors.is_empty() {
         for line in compile_errors {
@@ -122,10 +119,52 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         }
         return Err(Error::CompileError);
     }
+    let elf_name = format!("{}.elf", config.module.name);
+
+    // compile_commands not empty means sources were removed
+    // link flags can change if megaton toml changed
+    let mut needs_linking = objects_changed || !compile_commands.is_empty() || megaton_toml_changed || !paths.elf.exists();
+    // objects can be newer than elf even if not changed
+    if !needs_linking {
+        let elf_mtime = system::get_modified_time(&paths.elf)?;
+        for object in &objects {
+            let mtime = match system::get_modified_time(object) {
+                Ok(mtime) => mtime,
+                Err(_) => {
+                    needs_linking = true;
+                    break;
+                }
+            };
+            if mtime > elf_mtime {
+                needs_linking = true;
+                break;
+            }
+        }
+    }
+    // LD scripts can change
+    if !needs_linking {
+        let elf_mtime = system::get_modified_time(&paths.elf)?;
+        for ldscript in &build.ldscripts {
+            let ldscript = paths.root.join(ldscript);
+            let mtime = match system::get_modified_time(&ldscript) {
+                Ok(mtime) => mtime,
+                Err(_) => {
+                    needs_linking = true;
+                    break;
+                }
+            };
+            if mtime > elf_mtime {
+                needs_linking = true;
+                break;
+            }
+        }
+        
+    }
+    // TODO: libs can change
 
     if needs_linking {
         system::infoln!("Linking", "{}", elf_name);
-        let result = compiler.link(&objects, &elf_path)?;
+        let result = compiler.link(&objects, &paths.elf)?;
         if !result.success {
             for line in result.error {
                 system::errorln!("Error", "{}", line);
@@ -135,11 +174,128 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         system::verboseln!("Linked", "{}", elf_name);
     }
 
-    // if mt changed
-    // or if nso doesn't exist
-    // or if elf was relinked
-    // or if syms changed
-    // need nso
+    let mut needs_nso = needs_linking || !paths.nso.exists();
+    // elf can be newer if check failed
+    if !needs_nso {
+        let elf_mtime = system::get_modified_time(&paths.elf)?;
+        let nso_mtime = system::get_modified_time(&paths.nso)?;
+        if elf_mtime > nso_mtime {
+            needs_nso = true;
+        }
+    }
+    // symbol files can change
+    if !needs_nso {
+        if let Some(check_phase) = check_phase.as_ref() {
+            match check_phase.as_ref() {
+                Ok(check_phase) => {
+                    let nso_mtime = system::get_modified_time(&paths.nso)?;
+                    for symbol in &check_phase.config.symbols {
+                        let symbol = paths.root.join(symbol);
+                        let mtime = match system::get_modified_time(&symbol) {
+                            Ok(mtime) => mtime,
+                            Err(_) => {
+                                needs_nso = true;
+                                break;
+                            }
+                        };
+                        if mtime > nso_mtime {
+                            needs_nso = true;
+                            break;
+                        }
+                    }
+                },
+                Err(_) => {
+                    needs_nso = true;
+                }
+            }
+        }
+    }
+    if needs_nso {
+        let nso_name = format!("{}.nso", config.module.name);
+        if let Some(check_phase) = check_phase {
+            system::infoln!("Checking", "{}", elf_name);
+            let check_phase = check_phase?;
+            let missing_symbols = check_phase.check_symbols()?;
+            let mut check_ok = true;
+            if !missing_symbols.is_empty() {
+                system::errorln!("Error", "There are unresolved symbols:");
+                system::errorln!("Error", "");
+                for symbol in missing_symbols.iter().take(10) {
+                    system::errorln!("Error", "  {}", symbol);
+                }
+                if missing_symbols.len() > 10 {
+                    system::errorln!("Error", "  ... ({} more)", missing_symbols.len() - 10);
+                }
+                system::errorln!("Error", "");
+                system::errorln!(
+                    "Error",
+                    "Found {} unresolved symbols!",
+                    missing_symbols.len()
+                );
+                let missing_symbols = missing_symbols.join("\n");
+                let missing_symbols_path = paths.target.join("missing_symbols.txt");
+                system::write_file(&missing_symbols_path, &missing_symbols)?;
+                system::hintln!(
+                    "Hint",
+                    "Include the symbols in the linker scripts, or add them to the `ignore` section."
+                );
+                system::hintln!(
+                    "Saved",
+                    "All missing symbols to `{}`",
+                    paths.from_root(missing_symbols_path)?.display()
+                );
+                check_ok = false;
+            }
+            let bad_instructions = check_phase.check_instructions()?;
+            if !bad_instructions.is_empty() {
+                system::errorln!("Error", "There are unsupported/disallowed instructions:");
+                system::errorln!("Error", "");
+                for inst in bad_instructions.iter().take(10) {
+                    system::errorln!("Error", "  {}", inst);
+                }
+                if bad_instructions.len() > 10 {
+                    system::errorln!(
+                        "Error",
+                        "  ... ({} more)",
+                        bad_instructions.len() - 10
+                    );
+                }
+                system::errorln!("Error", "");
+                system::errorln!(
+                    "Error",
+                    "Found {} disallowed instructions!",
+                    bad_instructions.len()
+                );
+
+                let output = bad_instructions
+                    .join("\n");
+                let output_path = paths.target.join("disallowed_instructions.txt");
+                system::write_file(
+                    &output_path,
+                    &output,
+                )?;
+                system::hintln!(
+                    "Saved",
+                    "All disallowed instructions to {}",
+                    paths.from_root(output_path)?.display()
+                );
+                check_ok = false;
+            }
+            if !check_ok {
+                return Err(Error::CheckError);
+            }
+            system::infoln!("Checked", "{} looks good to me", elf_name);
+            system::infoln!("Creating", "{}", nso_name);
+
+            let status = ChildBuilder::new(&paths.elf2nso)
+                .args([&paths.elf, &paths.nso])
+                .silent()
+                .spawn()?.wait()?;
+            if !status.success() {
+                return Err(Error::Elf2NsoError);
+            }
+        }
+    }
 
     let elapsed = start_time.elapsed();
     system::infoln!("Finished", 

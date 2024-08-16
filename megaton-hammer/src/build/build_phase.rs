@@ -1,20 +1,19 @@
 //! Build flags processing
 
-use std::collections::{BTreeMap, HashMap};
-use std::fs::File;
+use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 
+use filetime::FileTime;
 use itertools::Itertools;
 use serde::{Deserialize, Serialize};
 
-use crate::build::{BuildFlags, Paths};
+use crate::build::Paths;
+use crate::build::config::Build;
 use crate::system::{self, ChildBuilder, Error, PathExt};
 
-use super::{are_deps_up_to_date, Build};
-
-pub struct Compiler<'a> {
+pub struct BuildPhase<'a> {
     paths: &'a Paths,
     c_flags: Vec<String>,
     cpp_flags: Vec<String>,
@@ -64,112 +63,66 @@ const DEFAULT_LD: &[&str] = &[
     "-Wl,--exclude-libs=ALL",
 ];
 
-impl<'a> Compiler<'a> {
+macro_rules! create_flags {
+    ($field: expr, $default: expr) => {
+        match $field {
+            None => $default.iter().map(|x| x.to_string()).collect_vec(),
+            Some(flags) => {
+                let mut v = vec![];
+                for flag in flags {
+                    if flag == "<default>" {
+                        v.extend($default.iter().map(|x| x.to_string()));
+                    } else {
+                        v.push(flag.clone());
+                    }
+                }
+                v
+            }
+        }
+    };
+    ($field: expr, $default: ident extends $base: expr) => {
+        match $field {
+            None => $base
+                .iter()
+                .cloned()
+                .chain($default.iter().map(|x| x.to_string()))
+                .collect_vec(),
+            Some(flags) => {
+                let mut v = $base.clone();
+                for flag in flags {
+                    if flag == "<default>" {
+                        v.extend($default.iter().map(|x| x.to_string()));
+                    } else {
+                        v.push(flag.clone());
+                    }
+                }
+                v
+            }
+        }
+    }
+}
+
+impl<'a> BuildPhase<'a> {
     pub fn new(
         paths: &'a Paths, 
         entry: &str, 
         build: &Build
     ) -> Result<Self, Error> {
         let flags = &build.flags;
-        let common = match &flags.common {
-            None => DEFAULT_COMMON.iter().map(|x| x.to_string()).collect_vec(),
-            Some(flags) => {
-                let mut v = vec![];
-                for flag in flags {
-                    if flag == "<default>" {
-                        v.extend(DEFAULT_COMMON.iter().map(|x| x.to_string()));
-                    } else {
-                        v.push(flag.clone());
-                    }
-                }
-                v
-            }
-        };
-
+        let common = create_flags!(&flags.common, DEFAULT_COMMON);
         let mut includes = Vec::with_capacity(build.includes.len());
         for dir in &build.includes {
             let path = paths.root.join(dir).canonicalize2()?;
             includes.push(format!("-I{}", path.display()));
         }
-
-        let mut c_flags = match &flags.c {
-            None => common
-                .iter()
-                .cloned()
-                .chain(DEFAULT_C.iter().map(|x| x.to_string()))
-                .collect_vec(),
-            Some(flags) => {
-                let mut v = common.clone();
-                for flag in flags {
-                    if flag == "<default>" {
-                        v.extend(DEFAULT_C.iter().map(|x| x.to_string()));
-                    } else {
-                        v.push(flag.clone());
-                    }
-                }
-                v
-            }
-        };
-
-        let mut cpp_flags = match &flags.cxx {
-            None => c_flags
-                .iter()
-                .cloned()
-                .chain(DEFAULT_CPP.iter().map(|x| x.to_string()))
-                .collect_vec(),
-            Some(flags) => {
-                let mut v = c_flags.clone();
-                for flag in flags {
-                    if flag == "<default>" {
-                        v.extend(DEFAULT_CPP.iter().map(|x| x.to_string()));
-                    } else {
-                        v.push(flag.clone());
-                    }
-                }
-                v
-            }
-        };
-
-        let s_flags = match &flags.as_ {
-            None => cpp_flags
-                .iter()
-                .cloned()
-                .chain(DEFAULT_S.iter().map(|x| x.to_string()))
-                .collect_vec(),
-            Some(flags) => {
-                let mut v = cpp_flags.clone();
-                for flag in flags {
-                    if flag == "<default>" {
-                        v.extend(DEFAULT_S.iter().map(|x| x.to_string()));
-                    } else {
-                        v.push(flag.clone());
-                    }
-                }
-                v
-            }
-        };
+        let mut c_flags = create_flags!(&flags.c, DEFAULT_C extends common);
+        let mut cpp_flags = create_flags!(&flags.cxx, DEFAULT_CPP extends c_flags);
+        let s_flags = create_flags!(&flags.as_, DEFAULT_S extends cpp_flags);
         c_flags.extend(includes.iter().cloned());
         cpp_flags.extend(includes.into_iter());
 
-        let mut ld_flags = match &flags.ld {
-            None => common
-                .iter()
-                .cloned()
-                .chain(DEFAULT_LD.iter().map(|x| x.to_string()))
-                .collect_vec(),
-            Some(flags) => {
-                let mut v = common.clone();
-                for flag in flags {
-                    if flag == "<default>" {
-                        v.extend(DEFAULT_LD.iter().map(|x| x.to_string()));
-                    } else {
-                        v.push(flag.clone());
-                    }
-                }
-                v
-            }
-        };
-        ld_flags.reserve_exact(2);
+        let mut ld_flags = create_flags!(&flags.ld, DEFAULT_LD extends common);
+
         ld_flags.push(format!("-Wl,-init={}", entry));
         ld_flags.push(format!("-Wl,--version-script={}", paths.verfile.display()));
         for libpath in &build.libpaths {
@@ -179,7 +132,8 @@ impl<'a> Compiler<'a> {
             ld_flags.push(format!("-l{}", lib));
         }
         for ldscript in &build.ldscripts {
-            ld_flags.push(format!("-Wl,-T,{}", paths.root.join(ldscript).canonicalize2()?.display()));
+            let path = paths.root.join(ldscript).canonicalize2()?;
+            ld_flags.push(format!("-Wl,-T,{}", path.display()));
         }
 
         Ok(Self {
@@ -267,6 +221,7 @@ impl<'a> Compiler<'a> {
         };
 
         CompileCommand {
+            directory: "/".to_string(),
             arguments,
             file: source,
             output: o_file,
@@ -361,6 +316,8 @@ pub enum SourceResult {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CompileCommand {
+    #[serde(default)]
+    directory: String,
     pub arguments: Vec<String>,
     pub file: String,
     pub output: String,
@@ -458,4 +415,33 @@ fn source_hashed(source: &str, base: &str, ext: &str) -> String {
     source.hash(&mut hasher);
     let hash = hasher.finish();
     format!("{}-{:016x}{}", base, hash, ext)
+}
+
+fn are_deps_up_to_date(d_path: &Path, o_mtime: FileTime) -> Result<bool, Error> {
+    // (very strong) assumptions of the depfiles:
+    // - the first rule is what we care about (the target)
+    // - the first line is just the target
+    if !d_path.exists() {
+        return Ok(false);
+    }
+    let lines = BufReader::new(system::open(d_path)?).lines();
+    for line in lines.skip(1) {
+        // skip the <target>: \ line
+        let line = match line {
+            Ok(x) => x,
+            Err(_) => return Ok(false),
+        };
+        let part = line.trim().trim_end_matches('\\').trim_end();
+        if part.ends_with(':') {
+            break;
+        }
+        let d_mtime = match system::get_modified_time(part) {
+            Ok(x) => x,
+            Err(_) => return Ok(false),
+        };
+        if d_mtime > o_mtime {
+            return Ok(false);
+        }
+    }
+    Ok(true)
 }
