@@ -7,15 +7,16 @@ edition = "2021"
 
 [dependencies]
 clap = { version = "4.4.10", features = ["derive"] }
+derivative = "2.2.0"
 dunce = "1.0.5"
 filetime = "0.2.22"
 fs4 = "0.9.1"
 itertools = "0.13.0"
-ninja-writer = "0.2.0"
 num_cpus = "1.16.0"
 oneshot = { version = "0.1.8", default-features = false, features = ["std"] }
 pathdiff = "0.2.1"
 regex = "1.10.2"
+rustc-hash = "2.0.0"
 serde = { version = "1.0.193", features = ["derive"] }
 serde_json = "1.0.108"
 termcolor = "1.4.0"

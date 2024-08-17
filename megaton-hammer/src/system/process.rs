@@ -3,8 +3,6 @@ use std::ffi::OsStr;
 use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
-use std::sync::mpsc::{self, Receiver};
-use std::thread::{self, JoinHandle};
 
 use crate::system::{self, Error};
 
@@ -146,43 +144,6 @@ impl ChildProcess {
         self.child.stderr.take().map(BufReader::new)
     }
 
-    /// Take output with extra settings
-    pub fn take_output(&mut self) -> TermIter {
-        let (send, recv) = mpsc::channel();
-
-        let mut handles = vec![];
-
-        if let Some(stdout) = self.take_stdout() {
-            let send = send.clone();
-            let handle = thread::spawn(move || {
-                for line in TermLines::new(stdout).flatten() {
-                    if send.send(TermOut::Stdout(line)).is_err() {
-                        break;
-                    }
-                }
-            });
-
-            handles.push(handle);
-        }
-
-        if let Some(stderr) = self.take_stderr() {
-            let handle = thread::spawn(move || {
-                for line in TermLines::new(stderr).flatten() {
-                    if send.send(TermOut::Stderr(line)).is_err() {
-                        break;
-                    }
-                }
-            });
-
-            handles.push(handle);
-        }
-
-        TermIter {
-            recv,
-            join_handles: handles,
-        }
-    }
-
     /// Wait for the child process to exit
     pub fn wait(mut self) -> Result<ExitStatus, Error> {
         let status = self
@@ -195,131 +156,131 @@ impl ChildProcess {
     /// Take the stderr, and dump it using `errorln!`
     pub fn dump_stderr(&mut self, prefix: &str) {
         if let Some(stderr) = self.take_stderr() {
-            for line in TermLines::new(stderr).flatten() {
+            for line in stderr.lines().map_while(Result::ok) {
                 system::errorln!(prefix, "{line}");
             }
         }
     }
-
-    /// Take the stdout, and dump it using `hintln!`
-    pub fn dump_stdout(&mut self, prefix: &str) {
-        if let Some(stderr) = self.take_stdout() {
-            for line in TermLines::new(stderr).flatten() {
-                system::hintln!(prefix, "{line}");
-            }
-        }
-    }
-
-    /// Dump with extra settings
-    pub fn dump(&mut self, stdout_prefix: Option<&str>, stderr_prefix: Option<&str>, step: usize) {
-        for msg in self.take_output().step_by(step) {
-            match msg {
-                TermOut::Stdout(line) => {
-                    if let Some(prefix) = stdout_prefix {
-                        system::hintln!(prefix, "{line}");
-                    }
-                }
-                TermOut::Stderr(line) => {
-                    if let Some(prefix) = stderr_prefix {
-                        system::errorln!(prefix, "{line}");
-                    }
-                }
-            }
-        }
-    }
+    //
+    // /// Take the stdout, and dump it using `hintln!`
+    // pub fn dump_stdout(&mut self, prefix: &str) {
+    //     if let Some(stderr) = self.take_stdout() {
+    //         for line in TermLines::new(stderr).flatten() {
+    //             system::hintln!(prefix, "{line}");
+    //         }
+    //     }
+    // }
+    //
+    // /// Dump with extra settings
+    // pub fn dump(&mut self, stdout_prefix: Option<&str>, stderr_prefix: Option<&str>, step: usize) {
+    //     for msg in self.take_output().step_by(step) {
+    //         match msg {
+    //             TermOut::Stdout(line) => {
+    //                 if let Some(prefix) = stdout_prefix {
+    //                     system::hintln!(prefix, "{line}");
+    //                 }
+    //             }
+    //             TermOut::Stderr(line) => {
+    //                 if let Some(prefix) = stderr_prefix {
+    //                     system::errorln!(prefix, "{line}");
+    //                 }
+    //             }
+    //         }
+    //     }
+    // }
 }
 
-#[derive(Debug)]
-pub struct TermIter {
-    recv: Receiver<TermOut>,
-    join_handles: Vec<JoinHandle<()>>,
-}
-
-impl Iterator for TermIter {
-    type Item = TermOut;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        match self.recv.recv() {
-            Ok(x) => Some(x),
-            Err(_) => {
-                while let Some(handle) = self.join_handles.pop() {
-                    let _ = handle.join();
-                }
-                None
-            }
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq)]
-pub enum TermOut {
-    Stdout(String),
-    Stderr(String),
-}
-
-impl AsRef<str> for TermOut {
-    fn as_ref(&self) -> &str {
-        match self {
-            TermOut::Stdout(x) => x,
-            TermOut::Stderr(x) => x,
-        }
-    }
-}
-
-impl Into<String> for TermOut {
-    fn into(self) -> String {
-        match self {
-            TermOut::Stdout(x) => x,
-            TermOut::Stderr(x) => x,
-        }
-    }
-}
-
-/// Wrapper for reader that buffers the output until CR or LF
-#[derive(Debug)]
-pub struct TermLines<R>
-where
-    R: BufRead,
-{
-    read: R,
-    buffer: Vec<u8>,
-}
-
-impl<R> TermLines<R>
-where
-    R: BufRead,
-{
-    pub fn new(read: R) -> Self {
-        Self {
-            read,
-            buffer: Vec::new(),
-        }
-    }
-}
-
-impl<R> Iterator for TermLines<R>
-where
-    R: BufRead,
-{
-    type Item = std::io::Result<String>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        self.buffer.clear();
-        let mut buf: [u8; 1] = [0];
-
-        loop {
-            if let Err(e) = self.read.read_exact(&mut buf) {
-                if e.kind() == std::io::ErrorKind::UnexpectedEof {
-                    return None;
-                }
-                return Some(Err(e));
-            }
-
-            let c = buf[0];
-            if c == b'\n' || c == b'\r' {
-                return Some(Ok(String::from_utf8_lossy(&self.buffer).into_owned()));
-            }
-            self.buffer.push(c);
-        }
-    }
-}
+// #[derive(Debug)]
+// pub struct TermIter {
+//     recv: Receiver<TermOut>,
+//     join_handles: Vec<JoinHandle<()>>,
+// }
+//
+// impl Iterator for TermIter {
+//     type Item = TermOut;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         match self.recv.recv() {
+//             Ok(x) => Some(x),
+//             Err(_) => {
+//                 while let Some(handle) = self.join_handles.pop() {
+//                     let _ = handle.join();
+//                 }
+//                 None
+//             }
+//         }
+//     }
+// }
+//
+// #[derive(Debug, Clone, PartialEq)]
+// pub enum TermOut {
+//     Stdout(String),
+//     Stderr(String),
+// }
+//
+// impl AsRef<str> for TermOut {
+//     fn as_ref(&self) -> &str {
+//         match self {
+//             TermOut::Stdout(x) => x,
+//             TermOut::Stderr(x) => x,
+//         }
+//     }
+// }
+//
+// impl Into<String> for TermOut {
+//     fn into(self) -> String {
+//         match self {
+//             TermOut::Stdout(x) => x,
+//             TermOut::Stderr(x) => x,
+//         }
+//     }
+// }
+//
+// /// Wrapper for reader that buffers the output until CR or LF
+// #[derive(Debug)]
+// pub struct TermLines<R>
+// where
+//     R: BufRead,
+// {
+//     read: R,
+//     buffer: Vec<u8>,
+// }
+//
+// impl<R> TermLines<R>
+// where
+//     R: BufRead,
+// {
+//     pub fn new(read: R) -> Self {
+//         Self {
+//             read,
+//             buffer: Vec::new(),
+//         }
+//     }
+// }
+//
+// impl<R> Iterator for TermLines<R>
+// where
+//     R: BufRead,
+// {
+//     type Item = std::io::Result<String>;
+//
+//     fn next(&mut self) -> Option<Self::Item> {
+//         self.buffer.clear();
+//         let mut buf: [u8; 1] = [0];
+//
+//         loop {
+//             if let Err(e) = self.read.read_exact(&mut buf) {
+//                 if e.kind() == std::io::ErrorKind::UnexpectedEof {
+//                     return None;
+//                 }
+//                 return Some(Err(e));
+//             }
+//
+//             let c = buf[0];
+//             if c == b'\n' || c == b'\r' {
+//                 return Some(Ok(String::from_utf8_lossy(&self.buffer).into_owned()));
+//             }
+//             self.buffer.push(c);
+//         }
+//     }
+// }

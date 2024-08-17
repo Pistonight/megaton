@@ -1,5 +1,8 @@
+use derivative::Derivative;
 use threadpool::ThreadPool;
 
+#[derive(Debug, Derivative)]
+#[derivative(Default)]
 pub struct Executer {
     pool: ThreadPool,
 }

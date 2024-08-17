@@ -1,17 +1,17 @@
 //! The megaton build command
 
-use std::collections::HashMap;
 use std::io::{BufRead, BufWriter};
 use std::path::PathBuf;
-use std::sync::Arc;
 use std::time::Instant;
 
 use filetime::FileTime;
+use rustc_hash::FxHashMap;
 use serde_json::{json, Value};
 use walkdir::WalkDir;
 
 use crate::build::{
-    load_checker, load_compile_commands, Builder, BuildResult, Config, Paths, SourceResult
+    load_checker, load_compile_commands, BuildResult, BuildTask, Builder, Config, Paths,
+    SourceResult,
 };
 use crate::system::{self, ChildBuilder, Error, Executer, PathExt};
 use crate::Options;
@@ -24,7 +24,7 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     let megaton_toml = root.join("Megaton.toml");
     let config = Config::from_path(&megaton_toml)?;
     let profile = match (options.profile.as_str(), &config.module.default_profile) {
-        ("none", Some(p)) if p == "" => {
+        ("none", Some(p)) if p.is_empty() => {
             // default-profile = "" means to disallow no profile
             return Err(Error::NoProfile);
         }
@@ -35,7 +35,7 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
 
     let paths = Paths::new(root, profile, &config.module.name)?;
 
-    let executer = Arc::new(Executer::new());
+    let executer = Executer::new();
 
     let mut main_npdm_task = None;
 
@@ -62,14 +62,14 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     let entry = build.entry.as_ref().ok_or(Error::NoEntryPoint)?;
 
     let cc_possibly_changed = megaton_toml_changed;
-    let mut compile_commands = HashMap::new();
+    let mut compile_commands = FxHashMap::default();
     let mut new_compile_commands = Vec::new();
     if cc_possibly_changed {
         // even though this is blocking
         // this will only load when Megaton.toml changes
         load_compile_commands(&paths.cc_json, &mut compile_commands);
     }
-    let builder = Builder::new(&paths, &entry, &build)?;
+    let builder = Builder::new(&paths, entry, &build)?;
     // if any .o files were rebuilt
     let mut objects_changed = false;
     // all .o files
@@ -81,34 +81,36 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         let source_dir = paths.root.join(source_dir);
         for entry in WalkDir::new(source_dir).into_iter().flatten() {
             let source_path = entry.path();
-            let cc = builder.process_source(
-                source_path,
-                cc_possibly_changed,
-                &mut compile_commands,
-            )?;
+            let cc =
+                builder.process_source(source_path, cc_possibly_changed, &mut compile_commands)?;
             let cc = match cc {
                 SourceResult::NotSource => {
                     // file type not recognized, skip
                     continue;
-                },
+                }
                 SourceResult::UpToDate(o_file) => {
-                    system::verboseln!("Skipped", "{}", source_path.from_base(&paths.root)?.display());
+                    system::verboseln!(
+                        "Skipped",
+                        "{}",
+                        source_path.with_base(&paths.root)?.display()
+                    );
                     objects.push(o_file);
                     continue;
                 }
-                SourceResult::NeedCompile(cc) => cc
+                SourceResult::NeedCompile(cc) => cc,
             };
             objects_changed = true;
             objects.push(cc.output.clone());
-            let source_display = source_path.from_base(&paths.root)?.display().to_string();
-            system::verboseln!("Compiling", "{}", source_display);
-            let child = cc.start()?;
+            let source_display = source_path.with_base(&paths.root)?.display().to_string();
+            let child = cc.create_child();
             let task = executer.execute(move || {
+                system::infoln!("Compiling", "{}", source_display);
+                let child = BuildTask::new(child.spawn()?);
                 let result = child.wait()?;
                 if !result.success {
                     system::verboseln!("Failed", "{}", source_display);
                 }
-                system::infoln!("Compiled", "{}", source_display);
+                system::verboseln!("Compiled", "{}", source_display);
                 Ok::<BuildResult, Error>(result)
             });
             new_compile_commands.push(cc);
@@ -131,14 +133,12 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
 
     // if compiled, save cc_json
     let save_cc_json_task = if objects_changed || !compile_commands.is_empty() {
-        system::verboseln!("Saving", "compile_commands.json");
         let file = BufWriter::new(system::create(&paths.cc_json)?);
         let path_display = paths.cc_json.display().to_string();
         Some(executer.execute(move || {
-            serde_json::to_writer_pretty(
-                file, 
-                &new_compile_commands
-            ).map_err(|e| Error::ParseJson(path_display, e))?;
+            system::verboseln!("Saving", "compile_commands.json");
+            serde_json::to_writer_pretty(file, &new_compile_commands)
+                .map_err(|e| Error::ParseJson(path_display, e))?;
             system::verboseln!("Saved", "compile_commands.json");
             Ok::<(), Error>(())
         }))
@@ -150,7 +150,10 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
 
     // compile_commands not empty means sources were removed
     // link flags can change if megaton toml changed
-    let mut needs_linking = objects_changed || !compile_commands.is_empty() || megaton_toml_changed || !paths.elf.exists();
+    let mut needs_linking = objects_changed
+        || !compile_commands.is_empty()
+        || megaton_toml_changed
+        || !paths.elf.exists();
     // LD scripts can change
     if !needs_linking {
         let elf_mtime = system::get_modified_time(&paths.elf)?;
@@ -194,8 +197,8 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         (true, Some(check)) => {
             let check = check.get_profile(profile);
             Some(load_checker(&paths, check, &executer)?)
-        },
-        _ => None
+        }
+        _ => None,
     };
 
     // start joining the cc tasks
@@ -205,13 +208,13 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
             Err(e) => {
                 system::errorln!("Error", "{}", e);
                 compile_failed = true;
-            },
+            }
             Ok(result) => {
                 if !result.success {
                     compile_failed = true;
                 }
                 if let Some(error) = result.error {
-                    for line in error.lines().flatten() {
+                    for line in error.lines().map_while(Result::ok) {
                         system::errorln!("Error", "{}", line);
                     }
                 }
@@ -221,7 +224,7 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     if compile_failed {
         return Err(Error::CompileError);
     }
-    
+
     // linker dependencies
     if needs_linking {
         if let Some(verfile_task) = verfile_task {
@@ -232,10 +235,10 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     let elf_name = format!("{}.elf", config.module.name);
 
     let link_task = if needs_linking {
-        system::infoln!("Linking", "{}", elf_name);
         let task = builder.link_start(&objects, &paths.elf)?;
         let elf_name = elf_name.clone();
         let task = executer.execute(move || {
+            system::infoln!("Linking", "{}", elf_name);
             let result = task.wait()?;
             system::verboseln!("Linked", "{}", elf_name);
             Ok::<BuildResult, Error>(result)
@@ -269,7 +272,7 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         let result = task.wait()?;
         if !result.success {
             if let Some(error) = result.error {
-                for line in error.lines().flatten() {
+                for line in error.lines().map_while(Result::ok) {
                     system::errorln!("Error", "{}", line);
                 }
             }
@@ -322,11 +325,7 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
                     system::errorln!("Error", "  {}", inst);
                 }
                 if bad_instructions.len() > 10 {
-                    system::errorln!(
-                        "Error",
-                        "  ... ({} more)",
-                        bad_instructions.len() - 10
-                    );
+                    system::errorln!("Error", "  ... ({} more)", bad_instructions.len() - 10);
                 }
                 system::errorln!("Error", "");
                 system::errorln!(
@@ -335,13 +334,9 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
                     bad_instructions.len()
                 );
 
-                let output = bad_instructions
-                    .join("\n");
+                let output = bad_instructions.join("\n");
                 let output_path = paths.target.join("disallowed_instructions.txt");
-                system::write_file(
-                    &output_path,
-                    &output,
-                )?;
+                system::write_file(&output_path, &output)?;
                 system::hintln!(
                     "Saved",
                     "All disallowed instructions to {}",
@@ -352,13 +347,14 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
             if !check_ok {
                 return Err(Error::CheckError);
             }
-            system::infoln!("Checked", "{} looks good to me", elf_name);
+            system::hintln!("Checked", "Looks good to me");
             system::infoln!("Creating", "{}", nso_name);
 
             let status = ChildBuilder::new(&paths.elf2nso)
                 .args([&paths.elf, &paths.nso])
                 .silent()
-                .spawn()?.wait()?;
+                .spawn()?
+                .wait()?;
             if !status.success() {
                 return Err(Error::Elf2NsoError);
             }
@@ -374,7 +370,8 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     }
 
     let elapsed = start_time.elapsed();
-    system::infoln!("Finished", 
+    system::infoln!(
+        "Finished",
         "{} (profile `{profile}`) in {:.2}s",
         config.module.name,
         elapsed.as_secs_f32()
@@ -389,7 +386,8 @@ fn create_npdm(
     title_id: String,
     m_time: FileTime,
 ) -> Result<(), Error> {
-    let mut npdm_data: Value = serde_json::from_str(include_str!("../../template/main.npdm.json")).unwrap();
+    let mut npdm_data: Value =
+        serde_json::from_str(include_str!("../../template/main.npdm.json")).unwrap();
     npdm_data["title_id"] = json!(format!("0x{}", title_id));
     let npdm_data = serde_json::to_string_pretty(&npdm_data).expect("fail to serialize npdm data");
     let npdm_json = target.join("main.npdm.json");
@@ -408,7 +406,12 @@ fn create_npdm(
 }
 
 fn create_verfile(verfile: PathBuf, entry: String) -> Result<(), Error> {
-    let verfile_data = format!("{}{}{}", include_str!("../../template/verfile.before"),entry,include_str!("../../template/verfile.after"));
+    let verfile_data = format!(
+        "{}{}{}",
+        include_str!("../../template/verfile.before"),
+        entry,
+        include_str!("../../template/verfile.after")
+    );
     system::write_file(verfile, &verfile_data)?;
     Ok(())
 }
@@ -422,12 +425,11 @@ pub fn clean(dir: &str, options: &Options) -> Result<(), Error> {
         target.push(&options.profile);
     }
     if !root.exists() {
-        system::hintln!("Skipped", "{}", target.from_base(&root)?.display());
+        system::hintln!("Skipped", "{}", target.with_base(&root)?.display());
         return Ok(());
     }
 
     system::remove_directory(&target)?;
-    system::infoln!("Cleaned", "{}", target.from_base(&root)?.display());
+    system::infoln!("Cleaned", "{}", target.with_base(&root)?.display());
     Ok(())
 }
-

@@ -168,7 +168,7 @@ pub trait PathExt {
 
     /// Get the relative path from base to self. Base must be an absolute path.
     /// Will error if self or base does not exist.
-    fn from_base<P>(&self, base: P) -> Result<PathBuf, Error>
+    fn with_base<P>(&self, base: P) -> Result<PathBuf, Error>
     where
         P: AsRef<Path>;
 }
@@ -182,7 +182,7 @@ where
             .map_err(|x| Error::InvalidPath(self.as_ref().display().to_string(), x))
     }
 
-    fn from_base<PBase>(&self, base: PBase) -> Result<PathBuf, Error>
+    fn with_base<PBase>(&self, base: PBase) -> Result<PathBuf, Error>
     where
         PBase: AsRef<Path>,
     {

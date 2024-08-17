@@ -6,8 +6,8 @@ use std::sync::mpsc;
 use filetime::FileTime;
 use regex::Regex;
 
-use crate::build::Paths;
 use crate::build::config::Check;
+use crate::build::Paths;
 use crate::system::{self, ChildBuilder, Error, Executer, PathExt, Task};
 
 pub fn load_checker(paths: &Paths, config: Check, executer: &Executer) -> Result<Checker, Error> {
@@ -19,11 +19,7 @@ pub fn load_checker(paths: &Paths, config: Check, executer: &Executer) -> Result
         let id = paths.from_root(&path)?.display().to_string();
         let send = send.clone();
         let task = executer.execute(move || {
-            process_objdump_syms(
-                &id,
-                file.lines().flatten(),
-                send,
-            )?;
+            process_objdump_syms(&id, file.lines().map_while(Result::ok), send)?;
             Ok(())
         });
         tasks.push(task);
@@ -70,7 +66,7 @@ impl Checker {
         let dump_task = executer.execute(move || {
             process_objdump_syms(
                 "(output of `objdump -T`)",
-                elf_symbols.lines().flatten(),
+                elf_symbols.lines().map_while(Result::ok),
                 elf_send,
             )
         });
@@ -107,7 +103,6 @@ impl Checker {
             wait_task,
             load_tasks: std::mem::take(&mut self.tasks),
         })
-        
     }
 
     pub fn check_instructions(&self, executer: &Executer) -> Result<CheckInstructionTask, Error> {
@@ -118,10 +113,7 @@ impl Checker {
         let elf_instructions = child.take_stdout().ok_or(Error::ObjdumpFailed)?;
         let (elf_send, elf_recv) = mpsc::channel();
         let dump_task = executer.execute(move || {
-            process_objdump_insts(
-                elf_instructions.lines().flatten(),
-                elf_send,
-            );
+            process_objdump_insts(elf_instructions.lines().map_while(Result::ok), elf_send);
         });
 
         // These instructions will cause console to Instruction Abort
@@ -232,7 +224,7 @@ where
 {
     system::verboseln!("Loading", "{}", id);
     let mut iter = raw_symbols.into_iter();
-    while let Some(line) = iter.next() {
+    for line in iter.by_ref() {
         if line.as_ref() == "DYNAMIC SYMBOL TABLE:" {
             break;
         }
@@ -242,12 +234,12 @@ where
     // # 0000000000000000      DF *UND*	0000000000000000 nnsocketGetPeerName
     //                   ^ spaces      ^ this is a tag
 
-    while let Some(line) = iter.next() {
+    for line in iter {
         let line = line.as_ref();
         if line.len() <= 25 {
             continue;
         }
-        let symbol = match line[25..].splitn(2, ' ').skip(1).next() {
+        let symbol = match line[25..].split_once(' ').map(|x| x.1) {
             Some(symbol) => symbol,
             None => {
                 return Err(Error::InvalidObjdump(
@@ -266,10 +258,7 @@ where
 /// Parse the output of objdump --disassemble
 ///
 /// Returns a list of (address, instructions)
-fn process_objdump_insts<Iter, Str>(
-    raw_instructions: Iter,
-    send: mpsc::Sender<(String, String)>,
-) 
+fn process_objdump_insts<Iter, Str>(raw_instructions: Iter, send: mpsc::Sender<(String, String)>)
 where
     Iter: IntoIterator<Item = Str>,
     Str: AsRef<str>,
@@ -287,10 +276,8 @@ where
             let mut parts = line.splitn(2, ":\t");
             let addr = parts.next()?.to_string();
             let bytes_and_asm = parts.next()?;
-            let mut parts = bytes_and_asm.splitn(2, " \t");
-            let _bytes = parts.next()?;
             //14000008 	b	20 <entrypoint>
-            let inst = parts.next()?;
+            let (_bytes, inst) = bytes_and_asm.split_once(" \t")?;
             //b	20 <entrypoint>
             Some((addr, inst.to_string()))
         })

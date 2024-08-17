@@ -45,7 +45,6 @@ pub struct Paths {
 
     // /// The template json file for generating the npdm file. ($MEGATON_HOME/toolchain/npdm-template.json)
     // pub npdm_template_json: PathBuf,
-
     /// The target ELF (target/megaton/<profile>/<name>.elf)
     pub elf: PathBuf,
 
@@ -120,7 +119,7 @@ impl Paths {
     where
         P: AsRef<Path>,
     {
-        path.from_base(&self.root)
+        path.with_base(&self.root)
     }
 }
 
