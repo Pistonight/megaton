@@ -1,10 +1,10 @@
 //! Print Utilities
 
-use std::cell::RefCell;
-use std::io::{IsTerminal, Write};
-use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, WriteColor};
+use std::io::Write;
+use termcolor::{Color, ColorChoice, ColorSpec, StandardStream, StandardStreamLock, WriteColor};
 
 static mut VERBOSE: bool = false;
+static mut COLOR: bool = true;
 
 pub fn is_verbose() -> bool {
     unsafe { VERBOSE }
@@ -14,26 +14,23 @@ pub fn enable_verbose() {
     unsafe { VERBOSE = true }
 }
 
-thread_local! {
-    static STDOUT: RefCell<StandardStream> = RefCell::new(make_stdout());
+pub fn disable_colors() {
+    unsafe { COLOR = false }
 }
 
-fn make_stdout() -> StandardStream {
-    let color_choice = if std::io::stdout().is_terminal() {
+pub fn stdout() -> StandardStream {
+    let color = if unsafe { COLOR } {
         ColorChoice::Auto
     } else {
         ColorChoice::Never
     };
-    StandardStream::stdout(color_choice)
+    StandardStream::stdout(color)
 }
 
-pub(crate) fn print_status_tag(color_spec: &ColorSpec, tag: &str) {
-    STDOUT.with_borrow_mut(|stdout| {
-        let _ = stdout.set_color(color_spec);
-        let _ = write!(stdout, "{:>12}", tag);
-        let _ = stdout.reset();
-        print!(" ");
-    });
+pub(crate) fn print_status_tag(stdout: &mut StandardStreamLock, color_spec: &ColorSpec, tag: &str) {
+    let _ = stdout.set_color(color_spec);
+    let _ = write!(stdout, "{:>12} ", tag);
+    let _ = stdout.reset();
 }
 
 pub fn info_color() -> ColorSpec {
@@ -57,9 +54,12 @@ pub fn error_color() -> ColorSpec {
 macro_rules! infoln {
     ($status:expr, $($args:tt)*) => {
         {
+            use std::io::Write;
+            let stdout = $crate::system::stdout();
+            let mut stdout = stdout.lock();
             let status = { $status };
-            $crate::system::print_status_tag(&$crate::system::info_color(), status);
-            println!($($args)*);
+            $crate::system::print_status_tag(&mut stdout, &$crate::system::info_color(), status);
+            let _ = writeln!(&mut stdout, $($args)*);
         }
     };
 }
@@ -68,9 +68,12 @@ pub(crate) use infoln;
 macro_rules! errorln {
     ($status:expr, $($args:tt)*) => {
         {
+            use std::io::Write;
+            let stdout = $crate::system::stdout();
+            let mut stdout = stdout.lock();
             let status = { $status };
-            $crate::system::print_status_tag(&$crate::system::error_color(), status);
-            println!($($args)*);
+            $crate::system::print_status_tag(&mut stdout, &$crate::system::error_color(), status);
+            let _ = writeln!(&mut stdout, $($args)*);
         }
     };
 }
@@ -79,9 +82,12 @@ pub(crate) use errorln;
 macro_rules! hintln {
     ($status:expr, $($args:tt)*) => {
         {
+            use std::io::Write;
+            let stdout = $crate::system::stdout();
+            let mut stdout = stdout.lock();
             let status = { $status };
-            $crate::system::print_status_tag(&$crate::system::hint_color(), status);
-            println!($($args)*);
+            $crate::system::print_status_tag(&mut stdout, &$crate::system::hint_color(), status);
+            let _ = writeln!(&mut stdout, $($args)*);
         }
     };
 }
@@ -91,9 +97,12 @@ macro_rules! verboseln {
     ($status:expr, $($args:tt)*) => {
         {
             if ($crate::system::is_verbose()) {
+                use std::io::Write;
+                let stdout = $crate::system::stdout();
+                let mut stdout = stdout.lock();
                 let status = { $status };
-                $crate::system::print_status_tag(&$crate::system::hint_color(), status);
-                println!($($args)*);
+                $crate::system::print_status_tag(&mut stdout, &$crate::system::hint_color(), status);
+                let _ = writeln!(&mut stdout, $($args)*);
             }
         }
     };
