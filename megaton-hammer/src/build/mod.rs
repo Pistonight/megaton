@@ -1,9 +1,9 @@
 //! megaton build
 
-mod build_phase;
-pub use build_phase::*;
-mod check_phase;
-pub use check_phase::*;
+mod builder;
+pub use builder::*;
+mod checker;
+pub use checker::*;
 
 pub mod config;
 pub use config::Config;

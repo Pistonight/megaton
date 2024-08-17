@@ -61,8 +61,8 @@ pub enum Error {
     LinkError,
     #[error("Invalid objdump output `{0}`: {1}")]
     InvalidObjdump(String, String),
-    #[error("Objdump exited with status `{0}`")]
-    ObjdumpFailed(ExitStatus),
+    #[error("Objdump failed!")]
+    ObjdumpFailed,
     #[error("Check failed! Check errors above.")]
     CheckError,
     #[error("Failed to convert ELF to NSO!")]

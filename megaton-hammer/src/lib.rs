@@ -21,9 +21,9 @@ pub struct MegatonHammer {
     #[clap(short('C'), long, default_value = ".")]
     pub dir: String,
 
-    // /// Subcommand
-    // #[clap(subcommand)]
-    // pub command: Option<MegatonCommand>,
+    /// Subcommand
+    #[clap(subcommand)]
+    pub command: Option<MegatonCommand>,
 
     /// Build options
     #[clap(flatten)]
@@ -32,20 +32,23 @@ pub struct MegatonHammer {
 
 #[derive(Debug, Clone, PartialEq, Subcommand)]
 pub enum MegatonCommand {
+    // Clean project outputs
+    Clean,
     // /// Init a project - generate Megaton.toml, .clangd, etc
     // Init,
     // /// Build the toolchain
     // Toolchain,
 }
 
-// impl MegatonCommand {
-//     pub fn run(&self, args: &MegatonHammer) -> Result<(), Error> {
-//         match self {
-//             Self::Toolchain => toolchain::build(),
-//             Self::Init => init::init(&args.dir),
-//         }
-//     }
-// }
+impl MegatonCommand {
+    pub fn run(&self, args: &MegatonHammer) -> Result<(), Error> {
+        match self {
+            Self::Clean => build::clean(&args.dir, &args.options),
+            // Self::Toolchain => toolchain::build(),
+            // Self::Init => init::init(&args.dir),
+        }
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Parser)]
 pub struct Options {

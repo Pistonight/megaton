@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher};
 use std::io::{BufRead, BufReader};
 use std::path::Path;
+use std::process::ChildStderr;
 
 use filetime::FileTime;
 use itertools::Itertools;
@@ -11,9 +12,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::build::Paths;
 use crate::build::config::Build;
-use crate::system::{self, ChildBuilder, Error, PathExt};
+use crate::system::{self, ChildBuilder, ChildProcess, Error, PathExt};
 
-pub struct BuildPhase<'a> {
+pub struct Builder<'a> {
     paths: &'a Paths,
     c_flags: Vec<String>,
     cpp_flags: Vec<String>,
@@ -102,7 +103,7 @@ macro_rules! create_flags {
     }
 }
 
-impl<'a> BuildPhase<'a> {
+impl<'a> Builder<'a> {
     pub fn new(
         paths: &'a Paths, 
         entry: &str, 
@@ -277,9 +278,9 @@ impl<'a> BuildPhase<'a> {
         }
     }
 
-    pub fn link(&self, objects: &[String], elf: &Path) -> Result<LinkResult, Error> {
+    pub fn link_start(&self, objects: &[String], elf: &Path) -> Result<BuildTask, Error> {
         // use CXX for linking
-        let mut child = ChildBuilder::new(&self.paths.make_cpp)
+        let child = ChildBuilder::new(&self.paths.make_cpp)
             .args(self.ld_flags.iter().chain(
                 objects.iter()
             ).chain(
@@ -291,20 +292,8 @@ impl<'a> BuildPhase<'a> {
             .silence_stdout()
             .pipe_stderr()
             .spawn()?;
-        let mut error = Vec::new();
-        if let Some(stderr) = child.take_stderr() {
-            let stderr = BufReader::new(stderr);
-            for line in stderr.lines() {
-                if let Ok(line) = line {
-                    error.push(line);
-                }
-            }
-        }
-        let status = child.wait()?;
-        Ok(LinkResult {
-            success: status.success(),
-            error,
-        })
+        system::verboseln!("Running", "{}", child.command());
+        Ok(BuildTask { child })
     }
 }
 
@@ -323,12 +312,6 @@ pub struct CompileCommand {
     pub output: String,
 }
 
-pub struct CompileResult {
-    pub source: String,
-    pub output: String,
-    pub success: bool,
-    pub error: Vec<String>,
-}
 
 pub struct LinkResult {
     pub success: bool,
@@ -336,29 +319,36 @@ pub struct LinkResult {
 }
 
 impl CompileCommand {
-    pub fn invoke(&self) -> Result<CompileResult, Error> {
-        let mut child = ChildBuilder::new(&self.arguments[0])
+    pub fn start(&self) -> Result<BuildTask, Error> {
+        system::verboseln!("Running", "{}", self.arguments.join(" "));
+        let child = ChildBuilder::new(&self.arguments[0])
             .args(&self.arguments[1..])
             .silence_stdout()
             .pipe_stderr()
             .spawn()?;
-        let mut error = Vec::new();
-        if let Some(stderr) = child.take_stderr() {
-            let stderr = BufReader::new(stderr);
-            for line in stderr.lines() {
-                if let Ok(line) = line {
-                    error.push(line);
-                }
-            }
-        }
+        Ok(BuildTask { child })
+    }
+}
+
+pub struct BuildTask {
+    child: ChildProcess,
+}
+
+impl BuildTask {
+    pub fn wait(self)  -> Result<BuildResult, Error> {
+        let mut child = self.child;
+        let error = child.take_stderr();
         let status = child.wait()?;
-        Ok(CompileResult {
-            source: self.file.clone(),
-            output: self.output.clone(),
+        Ok(BuildResult {
             success: status.success(),
             error,
         })
     }
+}
+
+pub struct BuildResult {
+    pub success: bool,
+    pub error: Option<BufReader<ChildStderr>>,
 }
 
 pub fn load_compile_commands(cc_json: &Path, map: &mut HashMap<String, CompileCommand>) {

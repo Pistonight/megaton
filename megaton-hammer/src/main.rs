@@ -5,12 +5,10 @@ fn main() {
     if cli.options.verbose {
         megaton_hammer::system::enable_verbose();
     }
-    // let result = match &cli.command {
-    //     Some(x) => x.run(&cli),
-    //     None => 
-    //     cli.build(),
-    // };
-        let result = cli.build();
+    let result = match &cli.command {
+        Some(x) => x.run(&cli),
+        None => cli.build(),
+    };
     if let Err(e) = result {
         e.print();
         std::process::exit(1);

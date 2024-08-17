@@ -1,7 +1,7 @@
 //! Subprocess Utilities
 use std::ffi::OsStr;
 use std::io::{BufRead, BufReader};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, ExitStatus, Stdio};
 use std::sync::mpsc::{self, Receiver};
 use std::thread::{self, JoinHandle};
@@ -127,6 +127,9 @@ pub struct ChildProcess {
 }
 
 impl ChildProcess {
+    pub fn command(&self) -> &str {
+        &self.command_str
+    }
     pub fn take_stdin(&mut self) -> ChildStdin {
         self.child
             .stdin

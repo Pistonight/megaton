@@ -192,10 +192,3 @@ where
         Ok(pathdiff::diff_paths(path, base).unwrap_or(path.to_path_buf()))
     }
 }
-
-macro_rules! root_rel {
-    ($paths:ident.$member:ident) => {
-        $paths.$member.from_base(&$paths.root)
-    };
-}
-pub(crate) use root_rel;
