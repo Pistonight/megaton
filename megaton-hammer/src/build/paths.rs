@@ -16,6 +16,9 @@ pub struct Paths {
     /// The g++ compiler binary
     pub make_cpp: PathBuf,
 
+    /// The libnx include directory ($DEVKITPRO/libnx/include)
+    pub libnx_include: PathBuf,
+
     /// The npdmtool executable ($DEVKITPRO/tools/bin/npdmtool)
     pub npdmtool: PathBuf,
 
@@ -77,6 +80,7 @@ impl Paths {
         let mut devkitpro = None;
         let make_c = check_dkp_tool!(devkitpro, "aarch64-none-elf-gcc", "devkitA64/bin");
         let make_cpp = check_dkp_tool!(devkitpro, "aarch64-none-elf-g++", "devkitA64/bin");
+        let libnx_include = get_devkitpro_path()?.join("libnx/include");
         let objdump = check_dkp_tool!(devkitpro, "aarch64-none-elf-objdump", "devkitA64/bin");
         let elf2nso = check_dkp_tool!(devkitpro, "elf2nso", "tools/bin");
         let npdmtool = check_dkp_tool!(devkitpro, "npdmtool", "tools/bin");
@@ -102,6 +106,7 @@ impl Paths {
             root,
             make_c,
             make_cpp,
+            libnx_include,
             npdmtool,
             objdump,
             elf2nso,

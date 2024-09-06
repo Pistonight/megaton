@@ -107,7 +107,8 @@ impl<'a> Builder<'a> {
     pub fn new(paths: &'a Paths, entry: &str, build: &Build) -> Result<Self, Error> {
         let flags = &build.flags;
         let common = create_flags!(&flags.common, DEFAULT_COMMON);
-        let mut includes = Vec::with_capacity(build.includes.len());
+        let mut includes = Vec::with_capacity(build.includes.len() + 1);
+        includes.push(format!("-I{}", paths.libnx_include.display()));
         for dir in &build.includes {
             let path = paths.root.join(dir).canonicalize2()?;
             includes.push(format!("-I{}", path.display()));
