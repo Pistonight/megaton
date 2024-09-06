@@ -16,6 +16,8 @@ use crate::build::{
 use crate::system::{self, ChildBuilder, Error, Executer, PathExt};
 use crate::Options;
 
+use super::config::Check;
+
 /// Run megaton build
 pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     let start_time = Instant::now();
@@ -192,12 +194,30 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
     }
     // TODO: libs can change
 
-    // eagerly load checker if linking is needed and check config exists
-    let checker = match (needs_linking, config.check.as_ref()) {
-        (true, Some(check)) => {
-            let check = check.get_profile(profile);
-            Some(load_checker(&paths, check, &executer)?)
+    let check_config = config.check.as_ref().map(|c| c.get_profile(profile));
+
+    let mut needs_nso = needs_linking || !paths.nso.exists();
+    // symbol files can change
+    if !needs_nso {
+        if let Some(config) = check_config.as_ref() {
+            let nso_mtime = system::get_modified_time(&paths.nso)?;
+            needs_nso = are_syms_newer_than(config, &paths, nso_mtime);
         }
+    }
+    // elf can be newer if check failed
+    if !needs_nso {
+        // note we don't need to wait for linker here
+        // because if is linking -> needs_linking must be true
+        let elf_mtime = system::get_modified_time(&paths.elf)?;
+        let nso_mtime = system::get_modified_time(&paths.nso)?;
+        if elf_mtime > nso_mtime {
+            needs_nso = true;
+        }
+    }
+
+    // eagerly load checker if checking is needed
+    let checker = match (needs_nso || needs_linking, check_config) {
+        (true, Some(check)) => Some(load_checker(&paths, check, &executer)?),
         _ => None,
     };
 
@@ -248,25 +268,6 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
         None
     };
 
-    let mut needs_nso = needs_linking || !paths.nso.exists();
-    // symbol files can change
-    if !needs_nso {
-        if let Some(checker) = checker.as_ref() {
-            let nso_mtime = system::get_modified_time(&paths.nso)?;
-            needs_nso = checker.are_syms_newer_than(&paths, nso_mtime);
-        }
-    }
-    // elf can be newer if check failed
-    if !needs_nso {
-        // note we don't need to wait for linker here
-        // because if is linking -> needs_linking must be true
-        let elf_mtime = system::get_modified_time(&paths.elf)?;
-        let nso_mtime = system::get_modified_time(&paths.nso)?;
-        if elf_mtime > nso_mtime {
-            needs_nso = true;
-        }
-    }
-
     // nso dependency
     if let Some(task) = link_task {
         let result = task.wait()?;
@@ -282,82 +283,81 @@ pub fn run(dir: &str, options: &Options) -> Result<(), Error> {
 
     if needs_nso {
         let nso_name = format!("{}.nso", config.module.name);
-        if let Some(mut checker) = checker {
-            system::infoln!("Checking", "{}", elf_name);
-            let missing_symbols = checker.check_symbols(&executer)?;
-            let bad_instructions = checker.check_instructions(&executer)?;
-            let missing_symbols = missing_symbols.wait()?;
-            let bad_instructions = bad_instructions.wait()?;
-            let mut check_ok = true;
-            if !missing_symbols.is_empty() {
-                system::errorln!("Error", "There are unresolved symbols:");
-                system::errorln!("Error", "");
-                for symbol in missing_symbols.iter().take(10) {
-                    system::errorln!("Error", "  {}", symbol);
-                }
-                if missing_symbols.len() > 10 {
-                    system::errorln!("Error", "  ... ({} more)", missing_symbols.len() - 10);
-                }
-                system::errorln!("Error", "");
-                system::errorln!(
-                    "Error",
-                    "Found {} unresolved symbols!",
-                    missing_symbols.len()
-                );
-                let missing_symbols = missing_symbols.join("\n");
-                let missing_symbols_path = paths.target.join("missing_symbols.txt");
-                system::write_file(&missing_symbols_path, &missing_symbols)?;
-                system::hintln!(
-                    "Hint",
-                    "Include the symbols in the linker scripts, or add them to the `ignore` section."
-                );
-                system::hintln!(
-                    "Saved",
-                    "All missing symbols to `{}`",
-                    paths.from_root(missing_symbols_path)?.display()
-                );
-                check_ok = false;
+        let mut checker = checker.expect("checker not loaded, dependency bug");
+        system::infoln!("Checking", "{}", elf_name);
+        let missing_symbols = checker.check_symbols(&executer)?;
+        let bad_instructions = checker.check_instructions(&executer)?;
+        let missing_symbols = missing_symbols.wait()?;
+        let bad_instructions = bad_instructions.wait()?;
+        let mut check_ok = true;
+        if !missing_symbols.is_empty() {
+            system::errorln!("Error", "There are unresolved symbols:");
+            system::errorln!("Error", "");
+            for symbol in missing_symbols.iter().take(10) {
+                system::errorln!("Error", "  {}", symbol);
             }
-            if !bad_instructions.is_empty() {
-                system::errorln!("Error", "There are unsupported/disallowed instructions:");
-                system::errorln!("Error", "");
-                for inst in bad_instructions.iter().take(10) {
-                    system::errorln!("Error", "  {}", inst);
-                }
-                if bad_instructions.len() > 10 {
-                    system::errorln!("Error", "  ... ({} more)", bad_instructions.len() - 10);
-                }
-                system::errorln!("Error", "");
-                system::errorln!(
-                    "Error",
-                    "Found {} disallowed instructions!",
-                    bad_instructions.len()
-                );
+            if missing_symbols.len() > 10 {
+                system::errorln!("Error", "  ... ({} more)", missing_symbols.len() - 10);
+            }
+            system::errorln!("Error", "");
+            system::errorln!(
+                "Error",
+                "Found {} unresolved symbols!",
+                missing_symbols.len()
+            );
+            let missing_symbols = missing_symbols.join("\n");
+            let missing_symbols_path = paths.target.join("missing_symbols.txt");
+            system::write_file(&missing_symbols_path, &missing_symbols)?;
+            system::hintln!(
+                "Hint",
+                "Include the symbols in the linker scripts, or add them to the `ignore` section."
+            );
+            system::hintln!(
+                "Saved",
+                "All missing symbols to `{}`",
+                paths.from_root(missing_symbols_path)?.display()
+            );
+            check_ok = false;
+        }
+        if !bad_instructions.is_empty() {
+            system::errorln!("Error", "There are unsupported/disallowed instructions:");
+            system::errorln!("Error", "");
+            for inst in bad_instructions.iter().take(10) {
+                system::errorln!("Error", "  {}", inst);
+            }
+            if bad_instructions.len() > 10 {
+                system::errorln!("Error", "  ... ({} more)", bad_instructions.len() - 10);
+            }
+            system::errorln!("Error", "");
+            system::errorln!(
+                "Error",
+                "Found {} disallowed instructions!",
+                bad_instructions.len()
+            );
 
-                let output = bad_instructions.join("\n");
-                let output_path = paths.target.join("disallowed_instructions.txt");
-                system::write_file(&output_path, &output)?;
-                system::hintln!(
-                    "Saved",
-                    "All disallowed instructions to {}",
-                    paths.from_root(output_path)?.display()
-                );
-                check_ok = false;
-            }
-            if !check_ok {
-                return Err(Error::CheckError);
-            }
-            system::hintln!("Checked", "Looks good to me");
-            system::infoln!("Creating", "{}", nso_name);
+            let output = bad_instructions.join("\n");
+            let output_path = paths.target.join("disallowed_instructions.txt");
+            system::write_file(&output_path, &output)?;
+            system::hintln!(
+                "Saved",
+                "All disallowed instructions to {}",
+                paths.from_root(output_path)?.display()
+            );
+            check_ok = false;
+        }
+        if !check_ok {
+            return Err(Error::CheckError);
+        }
+        system::hintln!("Checked", "Looks good to me");
+        system::infoln!("Creating", "{}", nso_name);
 
-            let status = ChildBuilder::new(&paths.elf2nso)
-                .args([&paths.elf, &paths.nso])
-                .silent()
-                .spawn()?
-                .wait()?;
-            if !status.success() {
-                return Err(Error::Elf2NsoError);
-            }
+        let status = ChildBuilder::new(&paths.elf2nso)
+            .args([&paths.elf, &paths.nso])
+            .silent()
+            .spawn()?
+            .wait()?;
+        if !status.success() {
+            return Err(Error::Elf2NsoError);
         }
     }
 
@@ -432,4 +432,20 @@ pub fn clean(dir: &str, options: &Options) -> Result<(), Error> {
     system::remove_directory(&target)?;
     system::infoln!("Cleaned", "{}", target.with_base(&root)?.display());
     Ok(())
+}
+
+fn are_syms_newer_than(config: &Check, paths: &Paths, m_time: FileTime) -> bool {
+    for symbol in &config.symbols {
+        let symbol = paths.root.join(symbol);
+        let sym_mtime = match system::get_modified_time(&symbol) {
+            Ok(sym_mtime) => sym_mtime,
+            Err(_) => {
+                return true;
+            }
+        };
+        if sym_mtime > m_time {
+            return true;
+        }
+    }
+    false
 }

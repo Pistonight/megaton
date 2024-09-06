@@ -3,7 +3,6 @@ use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::sync::mpsc;
 
-use filetime::FileTime;
 use regex::Regex;
 
 use crate::build::config::Check;
@@ -39,22 +38,6 @@ pub struct Checker {
 }
 
 impl Checker {
-    pub fn are_syms_newer_than(&self, paths: &Paths, m_time: FileTime) -> bool {
-        for symbol in &self.data.config.symbols {
-            let symbol = paths.root.join(symbol);
-            let sym_mtime = match system::get_modified_time(&symbol) {
-                Ok(sym_mtime) => sym_mtime,
-                Err(_) => {
-                    return true;
-                }
-            };
-            if sym_mtime > m_time {
-                return true;
-            }
-        }
-        false
-    }
-
     pub fn check_symbols(&mut self, executer: &Executer) -> Result<CheckSymbolTask, Error> {
         // run objdump -T
         let mut child = ChildBuilder::new(&self.data.objdump)

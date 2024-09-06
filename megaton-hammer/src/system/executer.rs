@@ -21,7 +21,7 @@ impl Executer {
     {
         let (send, recv) = oneshot::channel();
         self.pool.execute(move || {
-            send.send(f()).unwrap();
+            let _ = send.send(f());
         });
         Task { recv }
     }
