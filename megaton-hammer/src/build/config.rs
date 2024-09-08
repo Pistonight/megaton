@@ -118,6 +118,7 @@ impl Profilable for Build {
         self.libpaths.extend(other.libpaths.iter().cloned());
         self.libraries.extend(other.libraries.iter().cloned());
         self.ldscripts.extend(other.ldscripts.iter().cloned());
+        self.flags.extend(&other.flags);
     }
 }
 
